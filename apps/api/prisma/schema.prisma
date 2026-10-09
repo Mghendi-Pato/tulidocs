@@ -1,0 +1,405 @@
+// tuli (tulidocs.com) — invoices, quotes and receipts for small businesses worldwide (multi-tenant SaaS)
+// Every business-owned table carries organizationId. Guest documents carry guestToken instead.
+// Money: Decimal(18,2).
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["queryCompiler", "driverAdapters"]
+  engineType      = "client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────── Enums ───────────────────────────────
+
+/// SYSTEM_ADMIN is the platform super user (no business). ADMIN and STAFF belong to one business.
+enum Role {
+  SYSTEM_ADMIN
+  ADMIN
+  STAFF
+}
+
+enum TenantStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+/// FREE = watermarked + monthly limit. STARTER/PRO = paid (see src/billing/plans.ts)
+enum Plan {
+  FREE
+  STARTER
+  PRO
+}
+
+enum BillingCycle {
+  MONTHLY
+  YEARLY
+}
+
+enum DocumentType {
+  QUOTE
+  INVOICE
+  RECEIPT
+}
+
+/// Quotes: DRAFT → SENT → ACCEPTED/DECLINED (→ converted). Invoices: DRAFT → SENT → PARTIALLY_PAID → PAID. Receipts: PAID.
+enum DocumentStatus {
+  DRAFT
+  SENT
+  ACCEPTED
+  DECLINED
+  PARTIALLY_PAID
+  PAID
+  VOID
+}
+
+enum PaymentMethod {
+  MPESA
+  BANK
+  CASH
+  CARD
+  CHEQUE
+  OTHER
+}
+
+/// What a checkout (money paid to US, the platform) is for
+enum CheckoutPurpose {
+  DOCUMENT_UNLOCK
+  SUBSCRIPTION
+}
+
+enum CheckoutProvider {
+  MPESA
+  CARD
+}
+
+enum CheckoutStatus {
+  PENDING
+  PAID
+  FAILED
+  CANCELLED
+}
+
+// ─────────────────────────────── Tenancy ───────────────────────────────
+
+model Organization {
+  id        String       @id @default(uuid()) @db.Uuid
+  name      String
+  email     String?
+  phone     String?
+  address   String?
+  /// Tax / business registration number (KRA PIN, VAT number, GSTIN, EIN, ABN…)
+  taxId     String?
+  website   String?
+  /// ISO 3166 alpha-2 — drives default currency, tax name and tax-ID label (src/common/countries.ts)
+  country   String?      @db.VarChar(2)
+  /// What tax is called on documents: VAT, GST, Sales tax…
+  taxName    String @default("Tax")
+  /// Label printed before the tax ID: "KRA PIN", "VAT No.", "GSTIN"…
+  taxIdLabel String @default("Tax ID")
+  /// Logo as a data URL (PNG/JPEG/WebP, ≤ 400 KB) — rendered straight into templates
+  logo      String?
+  currency  String       @default("USD") @db.VarChar(3)
+  status    TenantStatus @default(ACTIVE)
+
+  // ── Payment details printed on invoices ──
+  mpesaPaybill String?
+  mpesaAccount String?
+  mpesaTill    String?
+  bankDetails  String?
+
+  // ── Defaults for new documents ──
+  defaultTemplate String  @default("classic")
+  defaultTaxRate  Decimal @default(0) @db.Decimal(5, 2)
+  defaultTerms    String?
+  defaultNotes    String?
+  paymentTermDays Int     @default(14)
+  invoicePrefix   String  @default("INV")
+  quotePrefix     String  @default("QUO")
+  receiptPrefix   String  @default("RCT")
+
+  // ── Subscription ──
+  plan          Plan          @default(FREE)
+  billingCycle  BillingCycle?
+  planExpiresAt DateTime?
+
+  // ── KRA eTIMS (OSCU) — placeholder, filled during eTIMS onboarding ──
+  etimsEnabled      Boolean @default(false)
+  etimsBranchId     String? @default("00")
+  etimsDeviceSerial String?
+  /// cmcKey returned by OSCU device initialization (store encrypted in production)
+  etimsCmcKey       String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users     User[]
+  clients   Client[]
+  documents Document[]
+  sequences Sequence[]
+  checkouts Checkout[]
+
+  @@index([status])
+}
+
+model User {
+  id             String        @id @default(uuid()) @db.Uuid
+  organizationId String?       @db.Uuid
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  email          String        @unique
+  name           String
+  /// null for Google-only accounts
+  passwordHash   String?
+  googleId       String?       @unique
+  /// Sign in with Apple (the stable "sub" Apple gives this person)
+  appleId        String?       @unique
+  avatarUrl      String?
+  role           Role          @default(ADMIN)
+  isActive       Boolean       @default(true)
+  lastLoginAt    DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  feedbackPosts    FeedbackPost[]
+  feedbackVotes    FeedbackVote[]
+  feedbackComments FeedbackComment[]
+
+  @@index([organizationId])
+}
+
+/// Per-business running numbers (INV-0001, QUO-0001, RCT-0001)
+model Sequence {
+  organizationId String       @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  type           DocumentType
+  next           Int          @default(1)
+
+  @@id([organizationId, type])
+}
+
+// ─────────────────────────────── Business data ───────────────────────────────
+
+model Client {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name           String
+  email          String?
+  phone          String?
+  address        String?
+  taxId         String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  documents Document[]
+
+  @@index([organizationId, name])
+}
+
+/// One table for quotes, invoices and receipts. Sender + recipient details are snapshotted
+/// on the document, so editing a client or the business later never changes issued documents.
+model Document {
+  id             String         @id @default(uuid()) @db.Uuid
+  /// null for guest documents
+  organizationId String?        @db.Uuid
+  organization   Organization?  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  /// Guest owner (random token in an httpOnly cookie); cleared when claimed by an account
+  guestToken     String?
+  type           DocumentType   @default(INVOICE)
+  status         DocumentStatus @default(DRAFT)
+  number         String
+  template       String         @default("classic")
+  /// Accent colour for the template (#rrggbb)
+  accent         String         @default("#2451d6")
+  currency       String         @default("USD") @db.VarChar(3)
+  /// Snapshot of the business's tax wording when issued
+  taxName        String         @default("Tax")
+  taxIdLabel     String         @default("Tax ID")
+  issueDate      DateTime       @db.Date
+  dueDate        DateTime?      @db.Date
+
+  // ── From (sender snapshot) ──
+  fromName    String
+  fromEmail   String?
+  fromPhone   String?
+  fromAddress String?
+  fromTaxId  String?
+  fromLogo    String?
+
+  // ── Bill to (recipient snapshot) ──
+  clientId      String? @db.Uuid
+  client        Client? @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  clientName    String
+  clientEmail   String?
+  clientPhone   String?
+  clientAddress String?
+  clientTaxId  String?
+
+  // ── Money ──
+  subtotal   Decimal @default(0) @db.Decimal(18, 2)
+  discount   Decimal @default(0) @db.Decimal(18, 2)
+  taxTotal   Decimal @default(0) @db.Decimal(18, 2)
+  total      Decimal @default(0) @db.Decimal(18, 2)
+  amountPaid Decimal @default(0) @db.Decimal(18, 2)
+
+  notes         String?
+  terms         String?
+  paymentInfo   String?
+  /// Receipt only: how the payment was made
+  paymentMethod PaymentMethod?
+  paymentRef    String?
+
+  /// Quote → invoice, invoice → receipt
+  sourceId String?    @db.Uuid
+  source   Document?  @relation("DocumentSource", fields: [sourceId], references: [id], onDelete: SetNull)
+  derived  Document[] @relation("DocumentSource")
+
+  // ── Pay-per-document unlock (guests, and FREE accounts) ──
+  unlockedAt  DateTime?
+  /// sha256 of the content that was paid for; template/accent are NOT part of it (switching templates is free)
+  unlockedHash String?
+
+  // ── KRA eTIMS (placeholder) ──
+  etimsInvoiceNo String?
+  etimsReceiptNo String?
+  etimsSignature String?
+  etimsQrUrl     String?
+  etimsSignedAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items     DocumentItem[]
+  checkouts Checkout[]
+
+  @@unique([organizationId, type, number])
+  @@index([organizationId, type, issueDate])
+  @@index([organizationId, status])
+  @@index([guestToken])
+}
+
+model DocumentItem {
+  id          String   @id @default(uuid()) @db.Uuid
+  documentId  String   @db.Uuid
+  document    Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  position    Int
+  description String
+  quantity    Decimal  @db.Decimal(14, 3)
+  unitPrice   Decimal  @db.Decimal(18, 2)
+  /// percent, e.g. 16 for VAT
+  taxRate     Decimal  @default(0) @db.Decimal(5, 2)
+  amount      Decimal  @db.Decimal(18, 2)
+
+  @@index([documentId, position])
+}
+
+// ─────────────────────────────── Platform billing ───────────────────────────────
+
+/// Money paid to the platform: unlocking one document, or a subscription.
+model Checkout {
+  id             String           @id @default(uuid()) @db.Uuid
+  purpose        CheckoutPurpose
+  provider       CheckoutProvider
+  status         CheckoutStatus   @default(PENDING)
+  organizationId String?          @db.Uuid
+  organization   Organization?    @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  documentId     String?          @db.Uuid
+  document       Document?        @relation(fields: [documentId], references: [id], onDelete: SetNull)
+  guestToken     String?
+  plan           Plan?
+  billingCycle   BillingCycle?
+  amount         Decimal          @db.Decimal(18, 2)
+  currency       String           @default("USD") @db.VarChar(3)
+  /// Country the price was chosen for (regional pricing)
+  country        String?          @db.VarChar(2)
+  phone          String?
+  email          String?
+  /// M-Pesa CheckoutRequestID / Paystack reference
+  providerRef    String?          @unique
+  /// M-Pesa receipt (e.g. SGH12ABC34) / card authorization reference
+  receipt        String?
+  failureReason  String?
+  raw            Json?
+  paidAt         DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  @@index([organizationId, createdAt])
+  @@index([status, createdAt])
+}
+
+// ─────────────────────────── Public feedback board ───────────────────────────
+
+/// PRIVATE = a message only the team sees (never on the public board)
+enum FeedbackCategory {
+  FEATURE
+  IMPROVEMENT
+  BUG
+  PRIVATE
+}
+
+/// Set by platform admins; shown publicly as the roadmap state
+enum FeedbackStatus {
+  OPEN
+  PLANNED
+  IN_PROGRESS
+  DONE
+  DECLINED
+}
+
+model FeedbackPost {
+  id           String           @id @default(uuid()) @db.Uuid
+  title        String
+  body         String
+  category     FeedbackCategory @default(FEATURE)
+  status       FeedbackStatus   @default(OPEN)
+  authorId     String?          @db.Uuid
+  author       User?            @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  /// shown publicly (first name + business); kept if the account is deleted
+  authorName   String
+  /// likes
+  voteCount    Int              @default(0)
+  /// dislikes
+  downCount    Int              @default(0)
+  commentCount Int              @default(0)
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+  votes        FeedbackVote[]
+  comments     FeedbackComment[]
+
+  @@index([status, voteCount])
+  @@index([createdAt])
+}
+
+/// One vote per voter: "u:<userId>" for accounts, "v:<id>" for visitors (nv_fb cookie)
+model FeedbackVote {
+  postId    String       @db.Uuid
+  post      FeedbackPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+  voterKey  String
+  /// 1 = like, -1 = dislike
+  value     Int          @default(1)
+  userId    String?      @db.Uuid
+  user      User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime     @default(now())
+
+  @@id([postId, voterKey])
+  @@index([userId])
+}
+
+model FeedbackComment {
+  id         String       @id @default(uuid()) @db.Uuid
+  postId     String       @db.Uuid
+  post       FeedbackPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+  authorId   String?      @db.Uuid
+  author     User?        @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  authorName String
+  /// written by the tuli team (platform admin)
+  isTeam     Boolean      @default(false)
+  body       String
+  createdAt  DateTime     @default(now())
+
+  @@index([postId, createdAt])
+}

@@ -1,0 +1,49 @@
+# ── Dependencies ─────────────────────────────
+node_modules/
+
+# ── Build output ─────────────────────────────
+dist/
+build/
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+
+# ── Environment & secrets (never commit) ─────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ── Prisma ───────────────────────────────────
+apps/api/src/generated/
+apps/api/generated/
+
+# ── Uploads / local storage ──────────────────
+uploads/
+tmp/
+
+# ── Tests & coverage ─────────────────────────
+coverage/
+
+# ── Logs ─────────────────────────────────────
+logs/
+*.log
+npm-debug.log*
+.pm2/
+
+# ── Editors & OS ─────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+*.swp
+
+# ── Local-only files ──
+Claude outputs/
+commands.md
+create-db.sh
+
+# Redis snapshot (if redis-server is started inside the repo)
+dump.rdb

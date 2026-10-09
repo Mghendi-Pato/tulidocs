@@ -1,0 +1,26 @@
+{
+  "name": "nubian-invoices",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Invoices, quotes and receipts for Kenyan SMEs (multi-tenant SaaS)",
+  "workspaces": [
+    "apps/api",
+    "apps/web"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c red,blue \"npm run start:dev -w apps/api\" \"npm run dev -w apps/web\"",
+    "dev:api": "npm run start:dev -w apps/api",
+    "dev:web": "npm run dev -w apps/web",
+    "build": "npm run build -w apps/api && npm run build -w apps/web",
+    "db:migrate": "npm run prisma:migrate -w apps/api",
+    "db:deploy": "npm run prisma:deploy -w apps/api",
+    "db:seed": "npm run prisma:seed -w apps/api",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=20.11"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

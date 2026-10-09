@@ -1,0 +1,89 @@
+@import 'tailwindcss';
+@import '@fontsource-variable/roboto';
+@import '@fontsource/poppins/600.css';
+@import '@fontsource/poppins/700.css';
+
+/*
+ * Design tokens — calm, financial-product feel.
+ * White canvas, navy text, one blue primary (matches the login page).
+ * Red is kept for the logo mark dot only.
+ */
+@theme {
+  /* Display headings (landing hero) */
+  --font-display: 'Poppins', ui-sans-serif, system-ui, sans-serif;
+  --font-sans: 'Roboto Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+
+  --color-primary: #2451d6;
+  --color-primary-hover: #1d44bb;
+  --color-primary-soft: #eaf0fd;
+
+  --color-ink: #0f1b33;
+  --color-ink-soft: #2b3650;
+  --color-muted: #5b6478;
+  --color-subtle: #8a92a3;
+  --color-line: #e3e8f0;
+  --color-line-strong: #cfd6e2;
+  --color-canvas: #ffffff;
+  --color-panel: #f3f6fb;
+  --color-sidebar: #f6f8fc;
+  --color-hover: #ebf0f9;
+  --color-selected: #e4ecfd;
+
+  --color-brand: #c8102e;
+  --color-brand-soft: #fdecee;
+
+  --color-positive: #17754a;
+  --color-positive-soft: #e7f4ec;
+  --color-warning: #8a5300;
+  --color-warning-soft: #fdf3e2;
+  --color-info: #274690;
+  --color-info-soft: #eaf0fb;
+  --color-danger: #b42318;
+  --color-danger-soft: #fdeceb;
+
+  --radius-card: 14px;
+  --shadow-pop: 0 12px 32px -8px rgb(15 27 51 / 0.18), 0 2px 6px rgb(15 27 51 / 0.06);
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-rendering: optimizeLegibility;
+  }
+  body {
+    @apply bg-canvas text-ink antialiased;
+    word-spacing: 0.03em;
+  }
+  /* Tabular figures anywhere money or numbers line up */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+  }
+  ::selection {
+    background: var(--color-selected);
+  }
+}
+
+@layer components {
+  .page-title {
+    @apply text-[28px] leading-tight font-extrabold tracking-[-0.02em] sm:text-[34px];
+  }
+  .section-title {
+    @apply text-[15px] font-bold tracking-[-0.005em] text-ink;
+  }
+  .card {
+    @apply rounded-[var(--radius-card)] border border-line bg-canvas;
+  }
+  .link {
+    @apply font-semibold text-primary underline decoration-primary/30 underline-offset-4 transition-colors hover:decoration-primary;
+  }
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+}
