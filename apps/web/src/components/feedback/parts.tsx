@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Input, Textarea } from '@/components/ui/field';
 import { api, errorMessage } from '@/lib/api';
 import { cn } from '@/lib/cn';
+import { LogoMark } from '../layout/logo';
 import { formatRelative } from '@/lib/format';
 import { CATEGORY_LABEL, FeedbackCategory, FeedbackComment, FeedbackDetail, feedbackKeys, FeedbackStatus, STATUS_LABEL, STATUS_TONE } from '@/lib/feedback';
 import { useMe } from '@/lib/queries';
@@ -45,8 +46,7 @@ export function Avatar({ name, team, size = 'md', className }: { name: string; t
         className,
       )}
     >
-      {team ? 't' : anonymous ? <User className={size === 'lg' ? 'size-6' : 'size-4'} /> : initials}
-      {team && <span className="absolute -top-0.5 -right-0.5 size-2.5 rounded-full border-2 border-canvas bg-brand" />}
+      {team ? <LogoMark className={size === 'lg' ? 'h-5' : size === 'sm' ? 'h-3' : 'h-4'} /> : anonymous ? <User className={size === 'lg' ? 'size-6' : 'size-4'} /> : initials}
     </span>
   );
 }

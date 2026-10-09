@@ -119,14 +119,12 @@ export function DocumentEditor({ value: v, onChange, mode, previewPath, previewE
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] xl:grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)]">
         <div className={cn("min-w-0 space-y-5", tab === "preview" && "max-lg:hidden")}>
-          <Card title="Template">
-            <TemplatePicker template={v.template} accent={v.accent} onTemplate={(template) => set({ template })} onAccent={(accent) => set({ accent })} />
-          </Card>
-
-          <Card title={`${label} details`}>
-            <div className="space-y-4">
-              {!lockType && (
+          <Card
+            title="Template"
+            action={
+              !lockType && (
                 <Segmented<DocType>
+                  compact
                   value={v.type}
                   onChange={setType}
                   options={[
@@ -135,7 +133,14 @@ export function DocumentEditor({ value: v, onChange, mode, previewPath, previewE
                     { value: 'RECEIPT', label: 'Receipt' },
                   ]}
                 />
-              )}
+              )
+            }
+          >
+            <TemplatePicker template={v.template} accent={v.accent} onTemplate={(template) => set({ template })} onAccent={(accent) => set({ accent })} />
+          </Card>
+
+          <Card title={`${label} details`}>
+            <div className="space-y-4">
               <div className="grid gap-4 sm:grid-cols-2">
                 <Field label={`${label} number`} required={mode === 'guest'} error={errors.number} hint={mode === 'business' && !v.number ? 'Assigned automatically' : undefined}>
                   {(id) => <Input id={id} value={v.number ?? ''} onChange={(e) => set({ number: e.target.value })} placeholder={mode === 'business' ? 'Auto' : 'INV-001'} aria-invalid={!!errors.number} />}

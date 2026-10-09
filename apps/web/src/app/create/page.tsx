@@ -188,7 +188,7 @@ function Builder() {
     <div className="mx-auto max-w-[1280px] px-4 pt-6 pb-0 sm:px-6 lg:px-10">
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h1 className="page-title">{id ? doc?.number ?? 'Your document' : 'Create an invoice'}</h1>
+          <h1 className="page-title">{id ? doc?.number ?? 'Your document' : value.type === 'QUOTE' ? 'Create a quote' : value.type === 'RECEIPT' ? 'Create a receipt' : 'Create an invoice'}</h1>
           <p className="mt-2 text-[15px] text-muted">No account needed. Your work is kept on this device.</p>
         </div>
         {!!mine.data?.length && (
