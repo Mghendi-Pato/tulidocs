@@ -23,7 +23,7 @@ Invoices, quotes and receipts for small businesses anywhere — multi-tenant Saa
 See `commands.md`. You need PostgreSQL 14+ and Redis 6+.
 
 ```bash
-./create-db.sh nubian_invoices
+./create-db.sh nubian_invoices   # local dev only
 cp apps/api/.env.example apps/api/.env   # set DATABASE_URL and JWT_SECRET
 cp apps/web/.env.example apps/web/.env
 npm install                              # downloads Chrome for Puppeteer (~170 MB) the first time
@@ -57,15 +57,36 @@ Kenya-only, shown only to Kenyan businesses. Placeholder only (`apps/api/src/eti
 
 ## Deploy (same pattern as nubian_imports)
 
-- Nginx: `deploy/nginx/nubian-invoices.conf` → static site in `/var/www/nubian-invoices`, `/api/` → `127.0.0.1:4400`.
-- `bash /root/nubian_invoices/deploy.sh` for every release (pm2 app `nubian-invoices-api`).
+Server layout: repo in `/root/tulidocs`, static site in `/var/www/tulidocs`, API under pm2 as `tulidocs-api` on
+**127.0.0.1:4617** (uncommon port on purpose — the server hosts several apps), nginx site `/etc/nginx/sites-available/tulidocs.com`.
+
+**First time (once per server):**
+
+```bash
+cd /root/tulidocs && git pull
+bash deploy/setup-server.sh
+```
+
+It checks port 4617 is free (`PORT=4627 bash deploy/setup-server.sh` to use another), installs Chrome's libraries for PDFs,
+creates the `tulidocs` Postgres database + user, writes the production `apps/api/.env` (asks for the Google client ID/secret),
+installs the nginx site + HTTPS via certbot, runs the first deploy and creates the platform admin. Safe to re-run.
+
+**Every update after that:**
+
+```bash
+bash /root/tulidocs/deploy.sh
+```
+
+pull → `npm ci` → migrations → build API → build + swap the static site → restart pm2 → health check.
+
+Notes
+- Google Cloud → OAuth client → Authorised redirect URI: `https://tulidocs.com/api/auth/google/callback`;
+  Authorised JavaScript origin: `https://tulidocs.com`.
+- Payments run in **mock** mode until live keys are added; `ALLOW_MOCK_PAYMENTS=true` in `.env` lets production start that way
+  (testing only — anyone can unlock for free). For launch: `MPESA_MODE=live`/`CARD_MODE=live` + keys, remove `ALLOW_MOCK_PAYMENTS`, `bash deploy.sh`.
 - Keep the site behind Cloudflare (orange cloud) so `CF-IPCountry` reaches the API for regional pricing.
+- Logs: `pm2 logs tulidocs-api`. Extra admin: `cd apps/api && npm run create-admin -- you@example.com 'StrongPass' "Name"`.
 - Template thumbnails: after changing a template, run `npx ts-node --transpile-only scripts/template-thumbnails.ts` in `apps/api`.
-- Server needs Redis (`apt install redis-server`) and Chrome's libraries:
-  `apt install -y libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2t64 libpango-1.0-0 libcairo2`
-  (or install `chromium` and set `CHROME_PATH`).
-- Production `.env`: `NODE_ENV=production`, `COOKIE_SECURE=true`, `APP_URL=https://tulidocs.com`, `API_PUBLIC_URL=https://tulidocs.com/api`, real `JWT_SECRET`, `MPESA_MODE`/`CARD_MODE` not `mock` (the API refuses to start otherwise).
-- Create the first platform admin: `npm run create-admin -w apps/api -- admin@nubiannetworks.com 'StrongPass' "Your Name"`.
 
 ## Layout
 

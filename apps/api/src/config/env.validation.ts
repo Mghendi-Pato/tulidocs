@@ -6,8 +6,16 @@ export function validateEnv(config: Record<string, unknown>) {
   if (secret.length < 32) errors.push('JWT_SECRET must be at least 32 characters');
   if (config.NODE_ENV === 'production') {
     if (/change-me|dev-secret/i.test(secret)) errors.push('JWT_SECRET must be changed for production');
-    if (config.MPESA_MODE === 'mock') errors.push('MPESA_MODE=mock is not allowed in production');
-    if (config.CARD_MODE === 'mock') errors.push('CARD_MODE=mock is not allowed in production');
+    // Mock payments hand out paid features for free, so production needs an explicit, temporary opt-in (testing phase)
+    const allowMock = String(config.ALLOW_MOCK_PAYMENTS ?? '').toLowerCase() === 'true';
+    const mock = [config.MPESA_MODE ?? 'mock', config.CARD_MODE ?? 'mock'].includes('mock');
+    if (mock && !allowMock) {
+      if ((config.MPESA_MODE ?? 'mock') === 'mock') errors.push('MPESA_MODE=mock is not allowed in production (set ALLOW_MOCK_PAYMENTS=true only while testing)');
+      if ((config.CARD_MODE ?? 'mock') === 'mock') errors.push('CARD_MODE=mock is not allowed in production (set ALLOW_MOCK_PAYMENTS=true only while testing)');
+    }
+    if (mock && allowMock) {
+      console.warn('\x1b[33m[tuli] WARNING: mock payments are ON in production (ALLOW_MOCK_PAYMENTS=true) — anyone can unlock documents and plans for free. Turn this off before launch.\x1b[0m');
+    }
   }
   if (errors.length) {
     throw new Error(`Invalid environment configuration:\n  - ${errors.join('\n  - ')}`);

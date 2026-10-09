@@ -3,7 +3,7 @@ import { PHASE_DEVELOPMENT_SERVER } from 'next/constants';
 
 /**
  * Production: `next build` emits a static site to ./out — Nginx serves it from /var/www
- * and proxies /api/ to the NestJS API (see deploy/nginx/nubian-invoices.conf).
+ * and proxies /api/ to the NestJS API (see deploy/nginx/tulidocs.conf).
  * Development: `next dev` proxies /api/* to API_URL so the auth cookie stays first-party.
  */
 export default function config(phase: string): NextConfig {
