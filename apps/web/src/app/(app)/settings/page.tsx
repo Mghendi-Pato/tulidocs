@@ -1,12 +1,13 @@
 'use client';
 
 import { useQueryClient } from '@tanstack/react-query';
-import { PartyPopper, ShieldCheck } from 'lucide-react';
+import { LogOut, PartyPopper, ShieldCheck, Trash2 } from 'lucide-react';
 import { useSearchParams } from 'next/navigation';
 import { ReactNode, Suspense, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { LogoPicker } from '@/components/editor/logo-picker';
 import { Button } from '@/components/ui/button';
+import { useConfirm } from '@/components/ui/confirm';
 import { Field, Input, PasswordInput, Select, Textarea } from '@/components/ui/field';
 import { Card, ErrorState, PageHeader } from '@/components/ui/misc';
 import { PageLoader } from '@/components/ui/spinner';
@@ -349,10 +350,87 @@ function Settings() {
                 {user.hasPassword ? 'Change password' : 'Set password'}
               </Button>
             </div>
+            {user.role !== 'SYSTEM_ADMIN' && <DeleteAccount email={user.email} />}
           </div>
         </Section>
+
+        <SessionsSection />
       </div>
     </>
+  );
+}
+
+/** Delete account: asks for a confirmation by email — nothing happens until the emailed link is used. */
+function DeleteAccount({ email }: { email: string }) {
+  const confirm = useConfirm();
+  const ask = () =>
+    confirm({
+      title: 'Delete your account?',
+      body: (
+        <>
+          We’ll email a confirmation link to <strong className="text-ink">{email}</strong>. Your account is only deleted once you open it. After that you won’t be able to sign
+          in or get back your documents and clients.
+        </>
+      ),
+      confirmLabel: 'Email me the link',
+      cancelLabel: 'Go back',
+      tone: 'danger',
+      action: async () => {
+        try {
+          await api.post('/auth/delete-account/request');
+          toast.success('Check your email', { description: `Open the link we sent to ${email} within 60 minutes to delete your account.` });
+        } catch (e) {
+          toast.error(errorMessage(e));
+          throw e;
+        }
+      },
+    });
+
+  return (
+    <div className="flex flex-col gap-3 border-t border-line pt-5 sm:flex-row sm:items-center sm:justify-between">
+      <div>
+        <h3 className="text-sm font-bold text-danger">Delete account</h3>
+        <p className="mt-0.5 text-sm text-muted">Close your account and business for good. We’ll ask you to confirm by email.</p>
+      </div>
+      <Button variant="secondary" onClick={ask} className="shrink-0 !border-danger/40 !text-danger hover:!border-danger">
+        <Trash2 className="size-4" /> Delete account
+      </Button>
+    </div>
+  );
+}
+
+/** "Log out everywhere": signs out every other phone, tablet and browser; this device stays signed in. */
+function SessionsSection() {
+  const confirm = useConfirm();
+  const signOutOthers = () =>
+    confirm({
+      title: 'Sign out of all other devices?',
+      body: 'Every other phone, tablet and browser signed in to your account will be signed out straight away. You’ll stay signed in here.',
+      confirmLabel: 'Sign out others',
+      cancelLabel: 'Go back',
+      tone: 'logout',
+      action: async () => {
+        try {
+          await api.post('/auth/logout-all');
+          toast.success('Signed out of all other devices');
+        } catch (e) {
+          toast.error(errorMessage(e));
+          throw e;
+        }
+      },
+    });
+
+  return (
+    <Section title="Signed-in devices" description="Lost a phone, or signed in on a shared computer? End those sessions here.">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-sm text-muted">
+          Signs you out of tuli everywhere except this device. If you think someone else knows your password, change it too — that also signs out other devices.
+        </p>
+        <Button variant="secondary" onClick={signOutOthers} className="shrink-0">
+          <LogOut className="size-4" /> Sign out other devices
+        </Button>
+      </div>
+    </Section>
   );
 }
 

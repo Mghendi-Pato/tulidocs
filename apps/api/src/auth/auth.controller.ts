@@ -9,8 +9,9 @@ import { randomBytes } from 'node:crypto';
 import { RedisService } from '../redis/redis.service';
 import { AuthService } from './auth.service';
 import { setAuthCookie } from './cookie';
-import { ChangePasswordDto, ForgotPasswordDto, ResetPasswordDto, ResendVerificationDto, VerifyEmailDto, LoginDto, ProfileDto, SignupDto } from './dto/auth.dto';
+import { ChangePasswordDto, DeleteAccountDto, ForgotPasswordDto, ResetPasswordDto, ResendVerificationDto, VerifyEmailDto, LoginDto, ProfileDto, SignupDto } from './dto/auth.dto';
 import { AUTH_COOKIE } from './jwt.strategy';
+import { DEVICE_COOKIE, LoginContext, LoginGuardService } from './login-guard.service';
 
 @Controller('auth')
 export class AuthController {
@@ -18,7 +19,18 @@ export class AuthController {
     private readonly auth: AuthService,
     private readonly config: ConfigService,
     private readonly redis: RedisService,
+    private readonly guard: LoginGuardService,
   ) {}
+
+  private loginContext(req: Request): LoginContext {
+    return { ip: req.ip ?? null, userAgent: req.get('user-agent') ?? null, deviceId: (req.cookies as Record<string, string> | undefined)?.[DEVICE_COOKIE] ?? null };
+  }
+
+  /** Remembers this browser for the user (new-device alert if it's unfamiliar) and keeps its id in a long-lived cookie. */
+  private async noteDevice(req: Request, res: Response, user: { id: string; email: string; name: string | null }, method: 'password' | 'Google' | 'Apple', alert = true) {
+    const id = await this.guard.noteSignIn(user, this.loginContext(req), method, alert);
+    res.cookie(DEVICE_COOKIE, id, { httpOnly: true, sameSite: 'lax', secure: this.config.get('COOKIE_SECURE') === 'true', path: '/', maxAge: 400 * 24 * 3600 * 1000 });
+  }
 
   private appUrl() {
     return this.config.get<string>('APP_URL', 'http://localhost:3000').replace(/\/$/, '');
@@ -39,9 +51,10 @@ export class AuthController {
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('login')
   @HttpCode(200)
-  async login(@Body() dto: LoginDto, @GuestToken() guest: string | null, @Res({ passthrough: true }) res: Response) {
-    const { token, user, claimed } = await this.auth.login(dto.email, dto.password, guest);
+  async login(@Body() dto: LoginDto, @GuestToken() guest: string | null, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    const { token, user, claimed } = await this.auth.login(dto.email, dto.password, guest, this.loginContext(req));
     setAuthCookie(res, this.config, token, dto.remember !== false);
+    await this.noteDevice(req, res, user, 'password');
     if (guest) res.clearCookie(GUEST_COOKIE, { path: '/' });
     return { user, claimed };
   }
@@ -76,12 +89,14 @@ export class AuthController {
     @Query('state') state: string | undefined,
     @Query('error') error: string | undefined,
     @GuestToken() guest: string | null,
+    @Req() req: Request,
     @Res() res: Response,
   ) {
     if (error || !code || !state) return res.redirect(`${this.appUrl()}/login/?error=${error === 'access_denied' ? 'google_cancelled' : 'google'}`);
     try {
-      const { token, next } = await this.auth.googleCallback(code, state, guest);
+      const { token, next, user } = await this.auth.googleCallback(code, state, guest);
       setAuthCookie(res, this.config, token);
+      await this.noteDevice(req, res, user, 'Google');
       if (guest) res.clearCookie(GUEST_COOKIE, { path: '/' });
       return res.redirect(`${this.appUrl()}${next}`);
     } catch (e) {
@@ -120,12 +135,13 @@ export class AuthController {
   /** Step 3: same-site GET — now the guest cookie is available to claim documents made before signing in */
   @Public()
   @Get('apple/finish')
-  async appleFinish(@Query('k') k: string | undefined, @GuestToken() guest: string | null, @Res() res: Response) {
+  async appleFinish(@Query('k') k: string | undefined, @GuestToken() guest: string | null, @Req() req: Request, @Res() res: Response) {
     const parked = k ? await this.redis.take<{ code: string; state: string; user: string | null }>(`apple-cb:${k}`) : null;
     if (!parked) return res.redirect(`${this.appUrl()}/login/?error=oauth_state`);
     try {
-      const { token, next } = await this.auth.appleCallback(parked.code, parked.state, parked.user ?? undefined, guest);
+      const { token, next, user } = await this.auth.appleCallback(parked.code, parked.state, parked.user ?? undefined, guest);
       setAuthCookie(res, this.config, token);
+      await this.noteDevice(req, res, user, 'Apple');
       if (guest) res.clearCookie(GUEST_COOKIE, { path: '/' });
       return res.redirect(`${this.appUrl()}${next}`);
     } catch (e) {
@@ -137,8 +153,21 @@ export class AuthController {
   @Public()
   @Post('logout')
   @HttpCode(200)
-  logout(@Res({ passthrough: true }) res: Response) {
+  async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    // end the session on the server too, not just in this browser
+    await this.auth.revokeSession((req.cookies as Record<string, string> | undefined)?.[AUTH_COOKIE]);
     res.clearCookie(AUTH_COOKIE, { path: '/' });
+    return { ok: true };
+  }
+
+  /** "Log out everywhere": signs out every other device and browser. This one gets a fresh session and stays in. */
+  @AnyAccount()
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Post('logout-all')
+  @HttpCode(200)
+  async logoutAll(@CurrentUser() user: AuthUser, @Res({ passthrough: true }) res: Response) {
+    const { token } = await this.auth.logoutEverywhere(user);
+    setAuthCookie(res, this.config, token);
     return { ok: true };
   }
 
@@ -165,6 +194,34 @@ export class AuthController {
     return { ok: true };
   }
 
+  /** Delete account, step 1 (signed in): emails a confirmation link */
+  @AnyAccount()
+  @Throttle({ default: { limit: 3, ttl: 15 * 60_000 } })
+  @Post('delete-account/request')
+  @HttpCode(200)
+  requestDeletion(@CurrentUser() user: AuthUser) {
+    return this.auth.requestAccountDeletion(user);
+  }
+
+  /** The confirmation page checks its link first */
+  @Public()
+  @Throttle({ default: { limit: 20, ttl: 15 * 60_000 } })
+  @Get('delete-account')
+  checkDeletion(@Query('token') token: string | undefined) {
+    return this.auth.checkAccountDeletion(String(token ?? ''));
+  }
+
+  /** Step 2: the emailed link confirms it — the account is closed and this browser signed out */
+  @Public()
+  @Throttle({ default: { limit: 10, ttl: 15 * 60_000 } })
+  @Post('delete-account')
+  @HttpCode(200)
+  async confirmDeletion(@Body() dto: DeleteAccountDto, @Res({ passthrough: true }) res: Response) {
+    const r = await this.auth.confirmAccountDeletion(dto.token);
+    res.clearCookie(AUTH_COOKIE, { path: '/' });
+    return r;
+  }
+
   /** "Forgot password?" — emails a one-time link. Same answer whether or not the account exists. */
   @Public()
   @Throttle({ default: { limit: 5, ttl: 15 * 60_000 } })
@@ -186,9 +243,10 @@ export class AuthController {
   @Throttle({ default: { limit: 10, ttl: 15 * 60_000 } })
   @Post('reset-password')
   @HttpCode(200)
-  async resetPassword(@Body() dto: ResetPasswordDto, @Res({ passthrough: true }) res: Response) {
+  async resetPassword(@Body() dto: ResetPasswordDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const { token, user } = await this.auth.resetPassword(dto.token, dto.password);
     setAuthCookie(res, this.config, token);
+    await this.noteDevice(req, res, user, 'password', false);
     return { user };
   }
 
@@ -197,9 +255,10 @@ export class AuthController {
   @Throttle({ default: { limit: 20, ttl: 15 * 60_000 } })
   @Post('verify-email')
   @HttpCode(200)
-  async verifyEmail(@Body() dto: VerifyEmailDto, @Res({ passthrough: true }) res: Response) {
+  async verifyEmail(@Body() dto: VerifyEmailDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const { token, user, next } = await this.auth.verifyEmail(dto.token);
     setAuthCookie(res, this.config, token);
+    await this.noteDevice(req, res, user, 'password', false);
     return { user, next };
   }
 

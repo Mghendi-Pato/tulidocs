@@ -26,6 +26,8 @@ function LoginForm() {
   const [remember, setRemember] = useState(true);
   const [error, setError] = useState<string | null>(() => GOOGLE_ERRORS[params.get('error') ?? ''] ?? (params.get('error') ? GOOGLE_ERRORS.google : null));
   const [busy, setBusy] = useState(false);
+  /** sign-in paused after too many wrong passwords → offer the reset link right in the message */
+  const [locked, setLocked] = useState(false);
   const [done, setDone] = useState(false);
   /** password was right but the email was never confirmed */
   const [unverified, setUnverified] = useState<string | null>(null);
@@ -46,6 +48,7 @@ function LoginForm() {
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setError(null);
+    setLocked(false);
     if (!email.trim() || !password) return setError('Enter your email and password');
     setBusy(true);
     try {
@@ -57,7 +60,10 @@ function LoginForm() {
       router.replace(next ?? (me.organization ? '/dashboard/' : '/platform/'));
     } catch (err) {
       if (err instanceof ApiError && err.code === 'EMAIL_NOT_VERIFIED') setUnverified(email.trim());
-      else setError(errorMessage(err));
+      else {
+        setLocked(err instanceof ApiError && err.code === 'ACCOUNT_LOCKED');
+        setError(errorMessage(err));
+      }
       setBusy(false);
     }
   };
@@ -71,6 +77,11 @@ function LoginForm() {
       {error && (
         <div role="alert" className="mb-6 rounded-lg bg-danger-soft px-4 py-3 text-sm font-semibold text-danger">
           {error}
+          {locked && (
+            <Link href={`/forgot-password/?email=${encodeURIComponent(email.trim())}`} className="mt-2 block font-bold underline underline-offset-2">
+              Reset my password
+            </Link>
+          )}
         </div>
       )}
       <div className="space-y-3">

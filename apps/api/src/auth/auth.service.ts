@@ -14,6 +14,8 @@ import { GuestService } from '../guest/guest.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { AppleConfig, appleAuthorizeUrl, appleExchange } from './apple';
+import { revokedSessionKey } from './jwt.strategy';
+import { LoginContext, LoginGuardService } from './login-guard.service';
 import { ChangePasswordDto, SignupDto } from './dto/auth.dto';
 import { emailLayout, escapeHtml, MailService } from '../mail/mail.service';
 
@@ -30,11 +32,51 @@ export class AuthService {
     private readonly redis: RedisService,
     private readonly guest: GuestService,
     private readonly mail: MailService,
+    private readonly guard: LoginGuardService,
   ) {}
 
   private sign(user: Pick<User, 'id' | 'organizationId'>) {
-    const payload: JwtPayload = { sub: user.id, org: user.organizationId ?? null };
-    return this.jwt.sign(payload);
+    const payload: JwtPayload = { sub: user.id, org: user.organizationId ?? null, t: Date.now() };
+    return this.jwt.sign(payload, { jwtid: randomBytes(16).toString('base64url') });
+  }
+
+  // ───────────────────────── Sessions ─────────────────────────
+
+  /**
+   * Ends one session server-side (logout): its id goes on a denylist until the token would have expired anyway,
+   * so a copied cookie stops working the moment the user logs out.
+   */
+  async revokeSession(token: string | undefined) {
+    if (!token) return;
+    const payload = this.jwt.decode<JwtPayload | null>(token);
+    if (!payload?.jti || !payload.exp) return;
+    const ttl = payload.exp - Math.floor(Date.now() / 1000);
+    if (ttl > 0) await this.redis.setJson(revokedSessionKey(payload.jti), 1, ttl).catch(() => undefined);
+  }
+
+  /** "Log out everywhere": every session issued before now stops working. Returns a fresh session for this device. */
+  async logoutEverywhere(user: AuthUser) {
+    const updated = await this.prisma.user.update({ where: { id: user.id }, data: { sessionsRevokedAt: new Date() } });
+    void this.sendSignedOutEverywhere(updated.email, updated.name).catch((e: Error) => this.logger.warn(`Sign-out notice failed: ${e.message}`));
+    return { token: this.sign(updated) };
+  }
+
+  private async sendSignedOutEverywhere(email: string, name: string | null) {
+    const first = (name || '').split(/\s+/)[0] || 'there';
+    await this.mail.send({
+      to: email,
+      subject: 'You signed out of tuli on your other devices',
+      text: `Hi ${first},\n\nYou just signed out of tuli on all your other devices. The device you used is still signed in.\n\nIf this wasn't you, change your password now at ${this.appUrl()}/forgot-password/ and contact us at info@nubiannetworks.com.`,
+      html: emailLayout({
+        heading: 'Signed out of other devices',
+        paragraphs: [
+          `Hi ${escapeHtml(first)},`,
+          'You just signed out of tuli on all your other devices — phones, tablets and computers. The device you used to do this is still signed in.',
+          `<strong>Wasn’t you?</strong> Someone may know your password. Reset it straight away and let us know at <a href="mailto:info@nubiannetworks.com" style="color:#2451d6">info@nubiannetworks.com</a>.`,
+        ],
+        button: { label: 'Reset my password', url: `${this.appUrl()}/forgot-password/` },
+      }),
+    });
   }
 
   /** Public config for the login page */
@@ -47,18 +89,150 @@ export class AuthService {
     };
   }
 
+  // ───────────────────────── Account deletion ─────────────────────────
+
+  private deleteKey = (hash: string) => `delete:${hash}`;
+  private deleteUserKey = (userId: string) => `delete:user:${userId}`;
+  private static DELETE_TTL = 60 * 60; // 1 hour
+
+  /** Step 1 (signed in): emails a one-time link that confirms the deletion. A new request replaces the previous link. */
+  async requestAccountDeletion(auth: AuthUser) {
+    const user = await this.prisma.user.findUniqueOrThrow({ where: { id: auth.id }, include: { organization: true } });
+    if (user.role === 'SYSTEM_ADMIN') throw new ForbiddenException({ code: 'FORBIDDEN', message: 'Platform admin accounts can’t be deleted from here.' });
+    const old = await this.redis.take<string>(this.deleteUserKey(user.id));
+    if (old) await this.redis.del(this.deleteKey(old));
+
+    const token = randomBytes(32).toString('base64url');
+    const hash = createHash('sha256').update(token).digest('hex');
+    await this.redis.setJson(this.deleteKey(hash), user.id, AuthService.DELETE_TTL);
+    await this.redis.setJson(this.deleteUserKey(user.id), hash, AuthService.DELETE_TTL);
+
+    const first = (user.name || '').split(/\s+/)[0] || 'there';
+    const link = `${this.appUrl()}/delete-account/?token=${token}`;
+    const business = user.organization?.name;
+    const paidNote = user.organization && hasPaidPlan(user.organization) ? ' Your paid plan ends with it — unused time isn’t refunded.' : '';
+    await this.mail.send({
+      to: user.email,
+      subject: 'Confirm deleting your tuli account',
+      text: `Hi ${first},\n\nWe received a request to delete your tuli account${business ? ` and the business “${business}”` : ''}.\n\nTo confirm, open this link within 60 minutes:\n${link}\n\nOnce deleted you won't be able to sign in or get back your invoices, quotes, receipts or clients.${paidNote}\n\nIf you didn't ask for this, ignore this email — your account stays as it is — and consider changing your password.`,
+      html: emailLayout({
+        heading: 'Confirm deleting your account',
+        paragraphs: [
+          `Hi ${escapeHtml(first)},`,
+          `We received a request to delete your tuli account${business ? ` and the business <strong>${escapeHtml(business)}</strong>` : ''}.`,
+          `Once deleted you won’t be able to sign in or get back your invoices, quotes, receipts or clients.${paidNote}`,
+        ],
+        button: { label: 'Yes, delete my account', url: link },
+        footnote: 'This link works once and expires in 60 minutes. Didn’t ask for this? Ignore this email — nothing will change — and consider changing your password.',
+      }),
+    });
+    return { ok: true, email: user.email };
+  }
+
+  /** The confirmation page checks the link before showing the final button (doesn't use it up). */
+  async checkAccountDeletion(token: string) {
+    const hash = createHash('sha256').update(token).digest('hex');
+    const userId = await this.redis.getJson<string>(this.deleteKey(hash));
+    if (!userId) return { valid: false };
+    const user = await this.prisma.user.findUnique({ where: { id: userId }, include: { organization: true } });
+    if (!user || !user.isActive || user.deletedAt) return { valid: false };
+    const paid = user.organization ? hasPaidPlan(user.organization) : false;
+    return {
+      valid: true,
+      email: user.email,
+      business: user.organization?.name ?? null,
+      documents: user.organizationId ? await this.prisma.document.count({ where: { organizationId: user.organizationId } }) : 0,
+      paidUntil: paid ? user.organization!.planExpiresAt : null,
+    };
+  }
+
+  /**
+   * Step 2: the emailed link was used — close the account.
+   * Nothing is erased: the business's records stay linked to this user so nothing is orphaned. Instead the email is renamed
+   * "<email><n>" (n = 1, 2, 3… for each deletion of the same address), which frees the address so the person can sign up
+   * again as a brand-new account, and the old account can never be signed in to again.
+   */
+  async confirmAccountDeletion(token: string) {
+    const hash = createHash('sha256').update(token).digest('hex');
+    const userId = await this.redis.take<string>(this.deleteKey(hash));
+    const expired = () => new BadRequestException({ code: 'DELETE_EXPIRED', message: 'This link has expired or was already used. Request a new one from Settings.' });
+    if (!userId) throw expired();
+    await this.redis.del(this.deleteUserKey(userId));
+    const user = await this.prisma.user.findUnique({ where: { id: userId }, include: { organization: true } });
+    if (!user || !user.isActive || user.deletedAt) throw expired();
+
+    const original = user.email;
+    for (let attempt = 0; ; attempt++) {
+      // earlier deletions of this address: "<email>1", "<email>2", …
+      const previous = await this.prisma.user.findMany({ where: { email: { startsWith: original } }, select: { email: true } });
+      const used = previous.map((u) => u.email.slice(original.length)).filter((rest) => /^\d+$/.test(rest)).map(Number);
+      const tombstone = `${original}${Math.max(0, ...used) + 1}`;
+      const now = new Date();
+      try {
+        await this.prisma.$transaction(async (tx) => {
+          await tx.user.update({
+            where: { id: user.id },
+            data: {
+              email: tombstone,
+              isActive: false,
+              deletedAt: now,
+              sessionsRevokedAt: now, // every device signed out
+              passwordHash: null,
+              googleId: null, // so "Continue with Google/Apple" creates a fresh account next time
+              appleId: null,
+            },
+          });
+          // close the business too, unless someone else still uses it
+          if (user.organizationId) {
+            const others = await tx.user.count({ where: { organizationId: user.organizationId, isActive: true, id: { not: user.id } } });
+            if (!others) await tx.organization.update({ where: { id: user.organizationId }, data: { deletedAt: now } });
+          }
+        });
+        break;
+      } catch (e) {
+        // two deletions of the same address at the same moment → pick the next number
+        if ((e as { code?: string }).code === 'P2002' && attempt < 3) continue;
+        throw e;
+      }
+    }
+    await this.guard.clear(original);
+    this.logger.log(`Account deleted: ${user.id} (${original})`);
+
+    const first = (user.name || '').split(/\s+/)[0] || 'there';
+    void this.mail
+      .send({
+        to: original,
+        subject: 'Your tuli account has been deleted',
+        text: `Hi ${first},\n\nYour tuli account has been deleted and you've been signed out everywhere. You're welcome back any time — signing up with this email starts a fresh account.\n\nQuestions? info@nubiannetworks.com`,
+        html: emailLayout({
+          heading: 'Your account has been deleted',
+          paragraphs: [
+            `Hi ${escapeHtml(first)},`,
+            'Your tuli account has been deleted and you’ve been signed out on every device.',
+            'Thanks for using tuli. You’re welcome back any time — signing up with this email starts a fresh account.',
+            `Questions? <a href="mailto:info@nubiannetworks.com" style="color:#2451d6">info@nubiannetworks.com</a>`,
+          ],
+        }),
+      })
+      .catch((e: Error) => this.logger.warn(`Goodbye email failed: ${e.message}`));
+    return { ok: true };
+  }
+
   // ───────────────────────── Email + password ─────────────────────────
 
-  async login(email: string, password: string, guestToken: string | null) {
+  async login(email: string, password: string, guestToken: string | null, ctx: LoginContext = {}) {
+    const addr = email.trim().toLowerCase();
+    // paused after too many wrong passwords — checked first, so even the right password doesn't get in until it lifts
+    await this.guard.assertNotLocked(addr);
     const user = await this.prisma.user.findUnique({ where: { email }, include: { organization: { select: { status: true } } } });
-    // same message whether the email or the password is wrong
-    const bad = () => new UnauthorizedException({ code: 'INVALID_CREDENTIALS', message: 'Email or password is incorrect' });
-    if (!user || !user.isActive) throw bad();
+    // same message whether the email or the password is wrong (and failures count for unknown emails too)
+    if (!user || !user.isActive) throw await this.guard.recordFailure(addr, null, ctx);
     if (!user.passwordHash) {
       if (user.appleId && !user.googleId) throw new UnauthorizedException({ code: 'USE_APPLE', message: 'This account signs in with Apple. Use “Continue with Apple”.' });
       throw new UnauthorizedException({ code: 'USE_GOOGLE', message: 'This account signs in with Google. Use “Continue with Google”.' });
     }
-    if (!(await bcrypt.compare(password, user.passwordHash))) throw bad();
+    if (!(await bcrypt.compare(password, user.passwordHash))) throw await this.guard.recordFailure(addr, user, ctx);
+    await this.guard.clear(addr);
     // right password, but the address was never confirmed → no session until they click the emailed link
     if (!user.emailVerifiedAt) {
       throw new ForbiddenException({ code: 'EMAIL_NOT_VERIFIED', message: 'Please confirm your email first — open the link we emailed you to activate your account.' });
@@ -206,14 +380,16 @@ export class AuthService {
     // following the emailed link proves the address
     if (!user.emailVerifiedAt) await this.prisma.user.update({ where: { id: user.id }, data: { emailVerifiedAt: new Date() } });
     void this.sendPasswordChanged(user.email, user.name);
+    // the emailed link proves it's the owner → lift any sign-in pause
+    await this.guard.clear(user.email);
     return { token: this.sign(user), user: { id: user.id, name: user.name, email: user.email } };
   }
 
   private async setPassword(userId: string, password: string) {
-    // stamped one second back so the session issued right after (same second) stays valid
+    // the fresh session for this device is signed after this, so it stays valid (tokens carry a millisecond issue time)
     return this.prisma.user.update({
       where: { id: userId },
-      data: { passwordHash: await bcrypt.hash(password, 11), passwordChangedAt: new Date(Date.now() - 1000) },
+      data: { passwordHash: await bcrypt.hash(password, 11), passwordChangedAt: new Date() },
     });
   }
 
@@ -248,7 +424,7 @@ export class AuthService {
   private provenByProvider(user: { emailVerifiedAt: Date | null; passwordHash: string | null }) {
     if (user.emailVerifiedAt) return {};
     return user.passwordHash
-      ? { emailVerifiedAt: new Date(), passwordHash: null, passwordChangedAt: new Date(Date.now() - 1000) }
+      ? { emailVerifiedAt: new Date(), passwordHash: null, passwordChangedAt: new Date() }
       : { emailVerifiedAt: new Date() };
   }
 
@@ -362,7 +538,7 @@ export class AuthService {
     const claimed = user.organizationId ? await this.guest.claim(guestToken, user.organizationId) : 0;
     this.logger.log(`Google sign-in ${email}${isNew ? ' (new business)' : ''}`);
     const next = isNew ? '/settings/?welcome=1' : user.role === 'SYSTEM_ADMIN' ? '/platform/' : saved.next;
-    return { token: this.sign(user), next, claimed };
+    return { token: this.sign(user), next, claimed, user: { id: user.id, name: user.name, email: user.email } };
   }
 
   // ───────────────────────── Apple ─────────────────────────
@@ -430,7 +606,7 @@ export class AuthService {
     const claimed = user.organizationId ? await this.guest.claim(guestToken, user.organizationId) : 0;
     this.logger.log(`Apple sign-in ${user.email}${isNew ? ' (new business)' : ''}`);
     const next = isNew ? '/settings/?welcome=1' : user.role === 'SYSTEM_ADMIN' ? '/platform/' : saved.next;
-    return { token: this.sign(user), next, claimed };
+    return { token: this.sign(user), next, claimed, user: { id: user.id, name: user.name, email: user.email } };
   }
 
   // ───────────────────────── Me ─────────────────────────

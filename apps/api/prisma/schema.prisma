@@ -103,6 +103,8 @@ model Organization {
   /// Logo as a data URL (PNG/JPEG/WebP, ≤ 400 KB) — rendered straight into templates
   logo      String?
   currency  String       @default("USD") @db.VarChar(3)
+  /// Closed because its owner deleted their account (kept for records, hidden from the platform list)
+  deletedAt DateTime?
   status    TenantStatus @default(ACTIVE)
 
   // ── Payment details printed on invoices ──
@@ -155,6 +157,11 @@ model User {
   passwordHash   String?
   /// Sessions issued before this moment are no longer valid (password reset / change → other devices signed out)
   passwordChangedAt DateTime?
+  /// "Log out everywhere": sessions issued before this moment are no longer valid
+  sessionsRevokedAt DateTime?
+  /// Account deleted by its owner. The row is kept (so the business's records aren't orphaned) but the email is
+  /// renamed to "<email><n>" so the address is free to sign up again — see AuthService.confirmAccountDeletion
+  deletedAt      DateTime?
   /// Set when the user proves they own the address (emailed link, Google/Apple sign-in, or a password reset)
   emailVerifiedAt DateTime?
   googleId       String?       @unique

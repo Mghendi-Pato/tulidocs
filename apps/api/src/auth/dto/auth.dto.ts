@@ -108,3 +108,10 @@ export class ResendVerificationDto {
   @MaxLength(200)
   email: string;
 }
+
+export class DeleteAccountDto {
+  @IsString()
+  @MinLength(20)
+  @MaxLength(200)
+  token: string;
+}

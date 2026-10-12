@@ -6,6 +6,12 @@ export interface JwtPayload {
   org: string | null;
   /** issued-at (seconds), added by jsonwebtoken */
   iat?: number;
+  /** expiry (seconds), added by jsonwebtoken */
+  exp?: number;
+  /** issued-at in milliseconds — precise enough that "sign out everywhere" can't miss a session started the same second */
+  t?: number;
+  /** unique session id — lets one session be revoked on its own (logout) */
+  jti?: string;
 }
 
 export interface AuthUser {

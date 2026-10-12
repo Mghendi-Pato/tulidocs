@@ -69,7 +69,9 @@ const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&
 export function emailLayout(opts: { heading: string; paragraphs: string[]; button?: { label: string; url: string }; footnote?: string }) {
   // the logo is a PNG served by the website (email apps don't show SVG); alt text "tuli" shows if images are blocked
   const appUrl = (process.env.APP_URL || `https://${BRAND.domain}`).replace(/\/$/, '');
-  const p = (t: string) => `<p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:#2b3140">${t}</p>`;
+  // a paragraph that is already a block (e.g. a details table) gets a plain wrapper — a <table> can't sit inside a <p>
+  const p = (t: string) =>
+    t.startsWith('<table') ? `<div style="margin:0 0 16px">${t}</div>` : `<p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:#2b3140">${t}</p>`;
   const button = opts.button
     ? `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:8px 0 24px"><tr><td style="border-radius:999px;background:#2451d6">
          <a href="${esc(opts.button.url)}" style="display:inline-block;padding:13px 26px;font-size:15px;font-weight:700;color:#ffffff;text-decoration:none;border-radius:999px">${esc(opts.button.label)}</a>

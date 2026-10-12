@@ -33,8 +33,8 @@ export class PlatformController {
   async overview() {
     const month = startOfMonth();
     const [businesses, paidOrgs, revenue, revenueAll, docsMonth, guestDocs, unlocks] = await Promise.all([
-      this.prisma.organization.count(),
-      this.prisma.organization.findMany({ where: { plan: { not: 'FREE' } }, select: { plan: true, planExpiresAt: true } }),
+      this.prisma.organization.count({ where: { deletedAt: null } }),
+      this.prisma.organization.findMany({ where: { plan: { not: 'FREE' }, deletedAt: null }, select: { plan: true, planExpiresAt: true } }),
       this.prisma.checkout.groupBy({ by: ['currency'], where: { status: 'PAID', paidAt: { gte: month } }, _sum: { amount: true } }),
       this.prisma.checkout.groupBy({ by: ['currency'], where: { status: 'PAID' }, _sum: { amount: true } }),
       this.prisma.document.count({ where: { createdAt: { gte: month } } }),
@@ -55,9 +55,10 @@ export class PlatformController {
 
   @Get('businesses')
   async businesses(@Query() q: PageQueryDto) {
+    // businesses closed by their owner (account deleted) are kept for records but not listed
     const where: Prisma.OrganizationWhereInput = q.search
-      ? { OR: [{ name: { contains: q.search, mode: 'insensitive' } }, { email: { contains: q.search, mode: 'insensitive' } }] }
-      : {};
+      ? { deletedAt: null, OR: [{ name: { contains: q.search, mode: 'insensitive' } }, { email: { contains: q.search, mode: 'insensitive' } }] }
+      : { deletedAt: null };
     const [rows, total] = await this.prisma.$transaction([
       this.prisma.organization.findMany({
         where,
