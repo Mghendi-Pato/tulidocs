@@ -15,6 +15,8 @@ export interface Me {
   avatarUrl: string | null;
   hasPassword: boolean;
   google: boolean;
+  /** false until the user clicks the emailed confirmation link (Google/Apple sign-ups are verified already) */
+  emailVerified?: boolean;
   organization: {
     id: string;
     name: string;

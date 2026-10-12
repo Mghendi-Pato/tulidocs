@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, Logger, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import type { User } from '@prisma/client';
@@ -59,6 +59,10 @@ export class AuthService {
       throw new UnauthorizedException({ code: 'USE_GOOGLE', message: 'This account signs in with Google. Use “Continue with Google”.' });
     }
     if (!(await bcrypt.compare(password, user.passwordHash))) throw bad();
+    // right password, but the address was never confirmed → no session until they click the emailed link
+    if (!user.emailVerifiedAt) {
+      throw new ForbiddenException({ code: 'EMAIL_NOT_VERIFIED', message: 'Please confirm your email first — open the link we emailed you to activate your account.' });
+    }
     if (user.organization?.status === 'SUSPENDED') {
       throw new UnauthorizedException({ code: 'TENANT_SUSPENDED', message: 'This business account is suspended. Please contact tuli support.' });
     }
@@ -67,14 +71,26 @@ export class AuthService {
     return { token: this.sign(user), user: { id: user.id, name: user.name, email: user.email }, claimed };
   }
 
-  async signup(dto: SignupDto, guestToken: string | null) {
+  /**
+   * Creates the account but does NOT sign in: the user must confirm their email first (the link signs them in).
+   * Signing up again with an address that was never confirmed just updates the password and re-sends the link.
+   */
+  async signup(dto: SignupDto, guestToken: string | null, next?: string | null) {
     if (!this.config_().signupEnabled) throw new BadRequestException({ code: 'SIGNUP_CLOSED', message: 'Sign-up is closed' });
-    const exists = await this.prisma.user.findUnique({ where: { email: dto.email }, select: { id: true } });
-    if (exists) throw new ConflictException({ code: 'EMAIL_TAKEN', message: 'An account with this email already exists. Sign in instead.' });
-    const name = dto.name || nameFromEmail(dto.email);
-    const user = await this.createBusiness({ name, email: dto.email, businessName: dto.businessName || `${name.split(/\s+/)[0]}'s Business`, country: dto.country, passwordHash: await bcrypt.hash(dto.password, 11) });
-    const claimed = await this.guest.claim(guestToken, user.organizationId!);
-    return { token: this.sign(user), user: { id: user.id, name: user.name, email: user.email }, claimed };
+    const exists = await this.prisma.user.findUnique({ where: { email: dto.email } });
+    if (exists?.emailVerifiedAt || (exists && !exists.passwordHash)) {
+      throw new ConflictException({ code: 'EMAIL_TAKEN', message: 'An account with this email already exists. Sign in instead.' });
+    }
+    let user = exists;
+    if (user) {
+      user = await this.prisma.user.update({ where: { id: user.id }, data: { passwordHash: await bcrypt.hash(dto.password, 11) } });
+    } else {
+      const name = dto.name || nameFromEmail(dto.email);
+      user = await this.createBusiness({ name, email: dto.email, businessName: dto.businessName || `${name.split(/\s+/)[0]}'s Business`, country: dto.country, passwordHash: await bcrypt.hash(dto.password, 11) });
+    }
+    const claimed = user.organizationId ? await this.guest.claim(guestToken, user.organizationId) : 0;
+    await this.sendVerification(user, next);
+    return { verificationRequired: true as const, email: user.email, claimed };
   }
 
   /** New business with country defaults (currency, tax wording and rate) — all editable in Settings */
@@ -103,6 +119,8 @@ export class AuthService {
           avatarUrl: input.avatarUrl ?? null,
           role: 'ADMIN',
           lastLoginAt: new Date(),
+          // Google / Apple have already confirmed the address
+          emailVerifiedAt: input.googleId || input.appleId ? new Date() : null,
         },
       });
     });
@@ -185,6 +203,8 @@ export class AuthService {
     const existing = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!existing?.isActive) throw new BadRequestException({ code: 'RESET_EXPIRED', message: 'This reset link has expired or was already used. Request a new one.' });
     const user = await this.setPassword(userId, password);
+    // following the emailed link proves the address
+    if (!user.emailVerifiedAt) await this.prisma.user.update({ where: { id: user.id }, data: { emailVerifiedAt: new Date() } });
     void this.sendPasswordChanged(user.email, user.name);
     return { token: this.sign(user), user: { id: user.id, name: user.name, email: user.email } };
   }
@@ -213,6 +233,75 @@ export class AuthService {
         button: { label: 'Reset my password', url: `${this.appUrl()}/forgot-password/` },
       }),
     });
+  }
+
+  // ───────────────────────── Email verification ─────────────────────────
+
+  private verifyKey = (hash: string) => `verify:${hash}`;
+  private verifyUserKey = (userId: string) => `verify:user:${userId}`;
+  private static VERIFY_TTL = 3 * 24 * 60 * 60; // 3 days
+
+  /**
+   * Google/Apple just proved this address. If the account was an unconfirmed password sign-up, that password may
+   * belong to someone else who registered the address first — remove it and sign those sessions out.
+   */
+  private provenByProvider(user: { emailVerifiedAt: Date | null; passwordHash: string | null }) {
+    if (user.emailVerifiedAt) return {};
+    return user.passwordHash
+      ? { emailVerifiedAt: new Date(), passwordHash: null, passwordChangedAt: new Date(Date.now() - 1000) }
+      : { emailVerifiedAt: new Date() };
+  }
+
+  /** Emails a "confirm your address" link (one live link per user; a new one replaces the old) */
+  async sendVerification(user: { id: string; email: string; name: string | null; emailVerifiedAt?: Date | null }, next?: string | null) {
+    if (user.emailVerifiedAt) return;
+    const token = randomBytes(32).toString('base64url');
+    const hash = createHash('sha256').update(token).digest('hex');
+    const previous = await this.redis.getJson<string>(this.verifyUserKey(user.id));
+    if (previous) await this.redis.del(this.verifyKey(previous));
+    await this.redis.setJson(this.verifyKey(hash), { userId: user.id, next: safeNext(next ?? undefined) }, AuthService.VERIFY_TTL);
+    await this.redis.setJson(this.verifyUserKey(user.id), hash, AuthService.VERIFY_TTL);
+
+    const url = `${this.appUrl()}/verify-email/?token=${token}`;
+    const first = (user.name || '').split(/\s+/)[0] || 'there';
+    await this.mail.send({
+      to: user.email,
+      subject: 'Confirm your email for tuli',
+      text: `Hi ${first},\n\nWelcome to tuli! Confirm your email to activate your account:\n${url}\n\nThe link expires in 3 days. If you didn't create a tuli account, you can ignore this email.`,
+      html: emailLayout({
+        heading: 'Confirm your email',
+        paragraphs: [
+          `Hi ${escapeHtml(first)},`,
+          'Welcome to tuli! Confirm your email address to activate your account — the button signs you straight in.',
+        ],
+        button: { label: 'Confirm & sign in', url },
+        footnote: 'The link expires in 3 days. Didn’t create a tuli account? You can ignore this email.',
+      }),
+    });
+  }
+
+  /** Re-sends the confirmation link. Same answer whatever the address, so it can't reveal who has an account. */
+  async resendVerification(email: string) {
+    const ok = { ok: true as const };
+    const addr = email.trim().toLowerCase();
+    const key = this.redis.key(`verify:count:${addr}`);
+    const n = await this.redis.client.incr(key);
+    if (n === 1) await this.redis.client.expire(key, 15 * 60);
+    if (n > 3) return ok;
+    const user = await this.prisma.user.findUnique({ where: { email: addr } });
+    if (user && !user.emailVerifiedAt && user.isActive) await this.sendVerification(user);
+    return ok;
+  }
+
+  /** Confirms the address from the emailed link and signs the user in */
+  async verifyEmail(token: string) {
+    const hash = createHash('sha256').update(token).digest('hex');
+    const data = await this.redis.take<{ userId: string; next: string | null }>(this.verifyKey(hash));
+    if (!data) throw new BadRequestException({ code: 'VERIFY_EXPIRED', message: 'This confirmation link has expired or was already used.' });
+    await this.redis.del(this.verifyUserKey(data.userId));
+    const user = await this.prisma.user.update({ where: { id: data.userId }, data: { emailVerifiedAt: new Date(), lastLoginAt: new Date() } });
+    if (!user.isActive) throw new BadRequestException({ code: 'VERIFY_EXPIRED', message: 'This account is deactivated.' });
+    return { token: this.sign(user), user: { id: user.id, name: user.name, email: user.email }, next: data.next };
   }
 
   private appUrl() {
@@ -259,7 +348,10 @@ export class AuthService {
     if (user) {
       if (!user.isActive) throw new UnauthorizedException({ code: 'INACTIVE', message: 'This account is deactivated' });
       if (user.organization?.status === 'SUSPENDED') throw new UnauthorizedException({ code: 'TENANT_SUSPENDED', message: 'This business account is suspended' });
-      await this.prisma.user.update({ where: { id: user.id }, data: { googleId: p.sub, avatarUrl: p.picture ?? user.avatarUrl, lastLoginAt: new Date() } });
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: { googleId: p.sub, avatarUrl: p.picture ?? user.avatarUrl, lastLoginAt: new Date(), ...this.provenByProvider(user) },
+      });
     } else {
       if (!this.config_().signupEnabled) throw new UnauthorizedException({ code: 'SIGNUP_CLOSED', message: 'Sign-up is closed' });
       const name = p.name || email.split('@')[0];
@@ -323,7 +415,10 @@ export class AuthService {
     if (user) {
       if (!user.isActive) throw new UnauthorizedException({ code: 'INACTIVE', message: 'This account is deactivated' });
       if (user.organization?.status === 'SUSPENDED') throw new UnauthorizedException({ code: 'TENANT_SUSPENDED', message: 'This business account is suspended' });
-      await this.prisma.user.update({ where: { id: user.id }, data: { appleId: id.sub, lastLoginAt: new Date() } });
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: { appleId: id.sub, lastLoginAt: new Date(), ...(id.email && id.emailVerified ? this.provenByProvider(user) : {}) },
+      });
     } else {
       if (!id.email) throw new UnauthorizedException({ code: 'OAUTH_FAILED', message: 'Apple didn’t share an email address' });
       if (!this.config_().signupEnabled) throw new UnauthorizedException({ code: 'SIGNUP_CLOSED', message: 'Sign-up is closed' });
@@ -343,7 +438,7 @@ export class AuthService {
   async me(auth: AuthUser) {
     const user = await this.prisma.user.findUniqueOrThrow({
       where: { id: auth.id },
-      select: { id: true, name: true, email: true, role: true, avatarUrl: true, passwordHash: true, googleId: true, organizationId: true },
+      select: { id: true, name: true, email: true, role: true, avatarUrl: true, passwordHash: true, googleId: true, organizationId: true, emailVerifiedAt: true },
     });
     const base = {
       id: user.id,
@@ -353,6 +448,7 @@ export class AuthService {
       avatarUrl: user.avatarUrl,
       hasPassword: !!user.passwordHash,
       google: !!user.googleId,
+      emailVerified: !!user.emailVerifiedAt,
     };
     if (!user.organizationId) return { ...base, organization: null };
     const org = await this.prisma.organization.findUniqueOrThrow({ where: { id: user.organizationId } });

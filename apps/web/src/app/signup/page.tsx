@@ -3,10 +3,11 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { ArrowRight, FileText } from 'lucide-react';
 import Link from 'next/link';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 import { FormEvent, Suspense, useState } from 'react';
 import { toast } from 'sonner';
 import { AppleButton, AuthLayout, GoogleButton, OrDivider } from '@/components/auth/auth-layout';
+import { CheckEmail } from '@/components/auth/check-email';
 import { Button } from '@/components/ui/button';
 import { Field, Input, PasswordInput } from '@/components/ui/field';
 import { api, ApiError, errorMessage } from '@/lib/api';
@@ -15,7 +16,6 @@ import { useAuthConfig, useGuestDocs, useLocalCountry } from '@/lib/queries';
 function SignupForm() {
   // not asked for — the visitor's country just sets sensible currency / tax defaults (changeable in Settings)
   const country = useLocalCountry();
-  const router = useRouter();
   const params = useSearchParams();
   const qc = useQueryClient();
   const { data: config } = useAuthConfig();
@@ -25,6 +25,7 @@ function SignupForm() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [sentTo, setSentTo] = useState<string | null>(null);
   const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value });
   const pending = guestDocs.data?.length ?? 0;
 
@@ -40,17 +41,33 @@ function SignupForm() {
     if (Object.keys(errs).length) return;
     setBusy(true);
     try {
-      const r = await api.post<{ claimed: number }>('/auth/signup', { ...f, country: country === 'XX' ? undefined : country });
-      qc.clear();
-      toast.success('Your account is ready', r.claimed ? { description: `${r.claimed} document(s) from this device were added.` } : undefined);
       const cycle = params.get('cycle');
-      router.replace(cycle === 'MONTHLY' || cycle === 'YEARLY' ? `/billing/?cycle=${cycle}` : '/settings/?welcome=1');
+      // where the emailed link should land them once confirmed
+      const next = cycle === 'MONTHLY' || cycle === 'YEARLY' ? `/billing/?cycle=${cycle}` : (params.get('next') ?? '/settings/?welcome=1');
+      const r = await api.post<{ email: string; claimed: number }>('/auth/signup', { ...f, next, country: country === 'XX' ? undefined : country });
+      qc.clear();
+      if (r.claimed) toast.success(`${r.claimed} document(s) from this device were added to your new account`);
+      setSentTo(r.email);
+      setBusy(false);
     } catch (err) {
       if (err instanceof ApiError && err.code === 'EMAIL_TAKEN') setErrors({ email: err.message });
       else setError(errorMessage(err));
       setBusy(false);
     }
   };
+
+  if (sentTo) {
+    return (
+      <CheckEmail
+        email={sentTo}
+        onBack={() => {
+          setSentTo(null);
+          setF({ email: '', password: '' });
+          setConfirm('');
+        }}
+      />
+    );
+  }
 
   if (config && !config.signupEnabled) {
     return <p className="rounded-lg bg-panel px-4 py-3 text-sm">New sign-ups are closed right now.</p>;

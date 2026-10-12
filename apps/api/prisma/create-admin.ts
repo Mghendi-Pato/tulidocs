@@ -17,8 +17,8 @@ const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: proc
 prisma.user
   .upsert({
     where: { email: email.toLowerCase() },
-    update: { passwordHash: bcrypt.hashSync(password, 11), role: 'SYSTEM_ADMIN', organizationId: null, isActive: true },
-    create: { email: email.toLowerCase(), name, role: 'SYSTEM_ADMIN', passwordHash: bcrypt.hashSync(password, 11) },
+    update: { passwordHash: bcrypt.hashSync(password, 11), role: 'SYSTEM_ADMIN', organizationId: null, isActive: true, emailVerifiedAt: new Date() },
+    create: { email: email.toLowerCase(), name, role: 'SYSTEM_ADMIN', passwordHash: bcrypt.hashSync(password, 11), emailVerifiedAt: new Date() },
   })
   .then((u) => console.log(`Platform admin ready: ${u.email}`))
   .catch((e) => {

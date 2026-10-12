@@ -155,6 +155,8 @@ model User {
   passwordHash   String?
   /// Sessions issued before this moment are no longer valid (password reset / change → other devices signed out)
   passwordChangedAt DateTime?
+  /// Set when the user proves they own the address (emailed link, Google/Apple sign-in, or a password reset)
+  emailVerifiedAt DateTime?
   googleId       String?       @unique
   /// Sign in with Apple (the stable "sub" Apple gives this person)
   appleId        String?       @unique

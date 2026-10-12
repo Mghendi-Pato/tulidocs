@@ -7,9 +7,10 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { FormEvent, Suspense, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { AppleButton, AuthLayout, GOOGLE_ERRORS, GoogleButton, OrDivider } from '@/components/auth/auth-layout';
+import { CheckEmail } from '@/components/auth/check-email';
 import { Button } from '@/components/ui/button';
 import { Checkbox, Field, Input, PasswordInput } from '@/components/ui/field';
-import { api, errorMessage } from '@/lib/api';
+import { ApiError, api, errorMessage } from '@/lib/api';
 import { detectCountry } from '@/lib/countries';
 import { useAuthConfig } from '@/lib/queries';
 
@@ -26,6 +27,8 @@ function LoginForm() {
   const [error, setError] = useState<string | null>(() => GOOGLE_ERRORS[params.get('error') ?? ''] ?? (params.get('error') ? GOOGLE_ERRORS.google : null));
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  /** password was right but the email was never confirmed */
+  const [unverified, setUnverified] = useState<string | null>(null);
   const next = safeNext(params.get('next'));
   const [country, setCountry] = useState<string | null>(null);
   useEffect(() => setCountry(detectCountry()), []);
@@ -53,10 +56,15 @@ function LoginForm() {
       const me = await api.get<{ organization: unknown }>('/auth/me');
       router.replace(next ?? (me.organization ? '/dashboard/' : '/platform/'));
     } catch (err) {
-      setError(errorMessage(err));
+      if (err instanceof ApiError && err.code === 'EMAIL_NOT_VERIFIED') setUnverified(email.trim());
+      else setError(errorMessage(err));
       setBusy(false);
     }
   };
+
+  if (unverified) {
+    return <CheckEmail email={unverified} onBack={() => setUnverified(null)} backLabel="Back to sign in" />;
+  }
 
   return (
     <>

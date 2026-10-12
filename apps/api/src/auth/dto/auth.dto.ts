@@ -47,6 +47,12 @@ export class SignupDto {
   @IsOptional()
   @Matches(/^[A-Z]{2}$/, { message: 'Choose a country' })
   country?: string;
+
+  /** where to land after confirming the email (e.g. /billing/?cycle=YEARLY); only same-site paths are kept */
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  next?: string;
 }
 
 export class ChangePasswordDto {
@@ -87,4 +93,18 @@ export class ResetPasswordDto {
   @MinLength(8, { message: 'Use at least 8 characters for your password' })
   @MaxLength(200)
   password: string;
+}
+
+export class VerifyEmailDto {
+  @IsString()
+  @MinLength(20)
+  @MaxLength(200)
+  token: string;
+}
+
+export class ResendVerificationDto {
+  @Transform(lower)
+  @IsEmail({}, { message: 'Enter a valid email address' })
+  @MaxLength(200)
+  email: string;
 }

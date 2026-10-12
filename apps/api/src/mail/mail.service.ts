@@ -67,6 +67,8 @@ const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&
 
 /** Simple, email-client-safe layout (tables + inline styles) */
 export function emailLayout(opts: { heading: string; paragraphs: string[]; button?: { label: string; url: string }; footnote?: string }) {
+  // the logo is a PNG served by the website (email apps don't show SVG); alt text "tuli" shows if images are blocked
+  const appUrl = (process.env.APP_URL || `https://${BRAND.domain}`).replace(/\/$/, '');
   const p = (t: string) => `<p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:#2b3140">${t}</p>`;
   const button = opts.button
     ? `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:8px 0 24px"><tr><td style="border-radius:999px;background:#2451d6">
@@ -77,7 +79,9 @@ export function emailLayout(opts: { heading: string; paragraphs: string[]; butto
   return `<!doctype html><html><body style="margin:0;background:#f4f6f9;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6f9;padding:32px 12px"><tr><td align="center">
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:520px;background:#ffffff;border-radius:16px;border:1px solid #e3e7ee">
-      <tr><td style="padding:28px 32px 8px;font-size:22px;font-weight:800;letter-spacing:-0.5px;color:#0c0d12">tuli</td></tr>
+      <tr><td style="padding:28px 32px 8px">
+        <a href="${esc(appUrl)}" style="text-decoration:none"><img src="${esc(appUrl)}/images/tuli-email.png" width="84" height="28" alt="tuli" style="display:block;border:0;outline:none;height:28px;width:84px;font-size:22px;font-weight:800;color:#0c0d12"></a>
+      </td></tr>
       <tr><td style="padding:8px 32px 28px">
         <h1 style="margin:0 0 16px;font-size:20px;line-height:1.3;color:#0c0d12">${esc(opts.heading)}</h1>
         ${opts.paragraphs.map(p).join('')}

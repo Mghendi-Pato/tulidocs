@@ -240,7 +240,9 @@ function Shell({ children }: { children: ReactNode }) {
         <div className="hidden lg:block" />
         <ProfileMenu />
       </header>
-      <main className="mx-auto max-w-[1280px] px-4 pt-4 pb-16 sm:px-6 lg:px-10 lg:pt-2">{children}</main>
+      <main className="mx-auto max-w-[1280px] px-4 pt-4 pb-16 sm:px-6 lg:px-10 lg:pt-2">
+        {children}
+      </main>
       <FeedbackTab />
     </div>
   );

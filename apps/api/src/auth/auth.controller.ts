@@ -9,7 +9,7 @@ import { randomBytes } from 'node:crypto';
 import { RedisService } from '../redis/redis.service';
 import { AuthService } from './auth.service';
 import { setAuthCookie } from './cookie';
-import { ChangePasswordDto, ForgotPasswordDto, ResetPasswordDto, LoginDto, ProfileDto, SignupDto } from './dto/auth.dto';
+import { ChangePasswordDto, ForgotPasswordDto, ResetPasswordDto, ResendVerificationDto, VerifyEmailDto, LoginDto, ProfileDto, SignupDto } from './dto/auth.dto';
 import { AUTH_COOKIE } from './jwt.strategy';
 
 @Controller('auth')
@@ -50,10 +50,10 @@ export class AuthController {
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post('signup')
   async signup(@Body() dto: SignupDto, @GuestToken() guest: string | null, @Res({ passthrough: true }) res: Response) {
-    const { token, user, claimed } = await this.auth.signup(dto, guest);
-    setAuthCookie(res, this.config, token);
-    if (guest) res.clearCookie(GUEST_COOKIE, { path: '/' });
-    return { user, claimed };
+    // no session yet: the emailed link confirms the address and signs the user in
+    const r = await this.auth.signup(dto, guest, dto.next);
+    if (guest && r.claimed) res.clearCookie(GUEST_COOKIE, { path: '/' });
+    return r;
   }
 
   /** Step 1 of Google sign-in: redirect to Google's account chooser */
@@ -190,5 +190,25 @@ export class AuthController {
     const { token, user } = await this.auth.resetPassword(dto.token, dto.password);
     setAuthCookie(res, this.config, token);
     return { user };
+  }
+
+  /** Confirms the address from the emailed link and signs the user in */
+  @Public()
+  @Throttle({ default: { limit: 20, ttl: 15 * 60_000 } })
+  @Post('verify-email')
+  @HttpCode(200)
+  async verifyEmail(@Body() dto: VerifyEmailDto, @Res({ passthrough: true }) res: Response) {
+    const { token, user, next } = await this.auth.verifyEmail(dto.token);
+    setAuthCookie(res, this.config, token);
+    return { user, next };
+  }
+
+  /** Re-sends the confirmation link (from the sign-up and sign-in screens). Same answer for every address. */
+  @Public()
+  @Throttle({ default: { limit: 5, ttl: 15 * 60_000 } })
+  @Post('resend-verification')
+  @HttpCode(200)
+  resendVerification(@Body() dto: ResendVerificationDto) {
+    return this.auth.resendVerification(dto.email);
   }
 }
