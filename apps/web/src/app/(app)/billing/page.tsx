@@ -176,37 +176,56 @@ export default function BillingPage() {
       <Card className="mt-6" title="Payment history" padded={false}>
         {data.history.length ? (
           <ul className="divide-y divide-line">
-            {data.history.map((h) => (
-              <li key={h.id} className="flex items-center justify-between gap-4 px-5 py-3.5 sm:px-6">
-                <span className="flex min-w-0 items-center gap-3">
-                  <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-panel text-ink-soft">
-                    {h.provider === 'MPESA' ? <Smartphone className="size-4" /> : <CreditCard className="size-4" />}
-                  </span>
-                  <span className="min-w-0">
-                    <span className="block truncate text-sm font-bold">
-                      {h.purpose === 'SUBSCRIPTION' ? `${h.plan === 'PRO' ? 'Pro' : 'Starter'} · ${h.billingCycle === 'YEARLY' ? '1 year' : '1 month'}${h.isUpgrade ? ' · upgrade' : ''}` : `Watermark removed · ${h.document?.number ?? 'document'}`}
+            {data.history.map((h) => {
+              const period = h.status === 'PAID' && h.periodStart && h.periodEnd ? { start: h.periodStart, end: h.periodEnd } : null;
+              const credit = h.isUpgrade && h.credit && Number(h.credit) > 0 ? formatMoney(h.credit, h.currency, { decimals: !Number.isInteger(Number(h.credit)) }) : null;
+              return (
+                <li key={h.id} className="flex items-center justify-between gap-3 px-5 py-3 sm:gap-4 sm:px-6 sm:py-3.5">
+                  <span className="flex min-w-0 items-center gap-3">
+                    {/* method icon: desktop only */}
+                    <span className="hidden size-9 shrink-0 items-center justify-center rounded-full bg-panel text-ink-soft sm:flex">
+                      {h.provider === 'MPESA' ? <Smartphone className="size-4" /> : <CreditCard className="size-4" />}
                     </span>
-                    {h.status === 'PAID' && h.periodStart && h.periodEnd && (
-                      <span className="block text-[12.5px] text-ink-soft">
-                        {formatDate(h.periodStart)} – {formatDate(h.periodEnd)}
-                        <PeriodTag start={h.periodStart} end={h.periodEnd} />
+                    <span className="min-w-0">
+                      <span className="flex items-center gap-2">
+                        <span className="truncate text-sm font-bold">
+                          {h.purpose === 'SUBSCRIPTION'
+                            ? `${h.plan === 'PRO' ? 'Pro' : 'Starter'} · ${h.billingCycle === 'YEARLY' ? '1 year' : '1 month'}${h.isUpgrade ? ' · upgrade' : ''}`
+                            : `Watermark removed · ${h.document?.number ?? 'document'}`}
+                        </span>
+                        {/* phone: status tag sits next to the title */}
+                        {period && <PeriodTag start={period.start} end={period.end} className="ml-0 shrink-0 sm:hidden" />}
                       </span>
-                    )}
-                    {h.isUpgrade && h.credit && Number(h.credit) > 0 && (
-                      <span className="block text-[12.5px] text-ink-soft">Credit applied for unused time: {formatMoney(h.credit, h.currency, { decimals: !Number.isInteger(Number(h.credit)) })}</span>
-                    )}
-                    <span className="block text-[12.5px] text-muted">
-                      Paid {formatDateTime(h.createdAt)}
-                      {h.receipt ? ` · ${h.receipt}` : ''}
+                      {period && (
+                        <span className="block text-[12.5px] text-ink-soft">
+                          <span className="sm:hidden">{shortRange(period.start, period.end)}</span>
+                          <span className="hidden sm:inline">
+                            {formatDate(period.start)} – {formatDate(period.end)}
+                          </span>
+                          <PeriodTag start={period.start} end={period.end} className="hidden sm:inline" />
+                        </span>
+                      )}
+                      {credit && (
+                        <span className="block text-[12.5px] text-ink-soft">
+                          <span className="sm:hidden">Credit {credit}</span>
+                          <span className="hidden sm:inline">Credit applied for unused time: {credit}</span>
+                        </span>
+                      )}
+                      {/* payment time + reference: desktop; phone shows just the date when there's no period line */}
+                      <span className="hidden text-[12.5px] text-muted sm:block">
+                        Paid {formatDateTime(h.createdAt)}
+                        {h.receipt ? ` · ${h.receipt}` : ''}
+                      </span>
+                      {!period && <span className="block text-[12.5px] text-muted sm:hidden">{formatDate(h.createdAt)}</span>}
                     </span>
                   </span>
-                </span>
-                <span className="text-right">
-                  <span className="block text-sm font-bold whitespace-nowrap tabular">{formatMoney(h.amount, h.currency, { decimals: !Number.isInteger(Number(h.amount)) })}</span>
-                  <span className={cn('text-[12.5px] font-semibold', h.status === 'PAID' ? 'text-positive' : 'text-danger')}>{h.status === 'PAID' ? 'Paid' : 'Failed'}</span>
-                </span>
-              </li>
-            ))}
+                  <span className="shrink-0 text-right">
+                    <span className="block text-sm font-bold whitespace-nowrap tabular">{formatMoney(h.amount, h.currency, { decimals: !Number.isInteger(Number(h.amount)) })}</span>
+                    <span className={cn('text-[12.5px] font-semibold', h.status === 'PAID' ? 'text-positive' : 'text-danger')}>{h.status === 'PAID' ? 'Paid' : 'Failed'}</span>
+                  </span>
+                </li>
+              );
+            })}
           </ul>
         ) : (
           <p className="px-6 pb-6 text-sm text-muted">No payments yet.</p>
@@ -248,10 +267,16 @@ export default function BillingPage() {
 }
 
 /** Where a paid period sits relative to today */
-function PeriodTag({ start, end }: { start: string; end: string }) {
+function PeriodTag({ start, end, className }: { start: string; end: string; className?: string }) {
   const now = Date.now();
   const [s, e] = [new Date(start).getTime(), new Date(end).getTime()];
   const [label, cls] =
-    e <= s ? ['Credited to upgrade', 'bg-panel text-muted'] : now < s ? ['Upcoming', 'bg-primary-soft text-primary'] : now < e ? ['Current', 'bg-positive-soft text-positive'] : ['Used', 'bg-panel text-muted'];
-  return <span className={cn('ml-2 rounded-full px-2 py-0.5 text-[11px] font-bold', cls)}>{label}</span>;
+    e <= s ? ['Credited', 'bg-panel text-muted'] : now < s ? ['Upcoming', 'bg-primary-soft text-primary'] : now < e ? ['Current', 'bg-positive-soft text-positive'] : ['Used', 'bg-panel text-muted'];
+  return <span className={cn('ml-2 rounded-full px-2 py-0.5 text-[11px] font-bold whitespace-nowrap', cls, className)}>{label}</span>;
+}
+
+/** Phone-friendly period: "12 Jan – 12 Feb 2027", or "12 Dec 2026 – 12 Jan 2027" across years */
+function shortRange(start: string, end: string) {
+  const sameYear = new Date(start).getFullYear() === new Date(end).getFullYear();
+  return `${formatDate(start, sameYear ? 'd MMM' : 'd MMM yyyy')} – ${formatDate(end)}`;
 }
