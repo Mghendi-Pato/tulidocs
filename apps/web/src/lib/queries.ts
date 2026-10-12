@@ -33,7 +33,7 @@ export function useMe(opts: { enabled?: boolean } = {}) {
 export function useAuthConfig() {
   return useQuery({
     queryKey: keys.config,
-    queryFn: () => api.get<{ platformName: string; googleEnabled: boolean; signupEnabled: boolean }>('/auth/config'),
+    queryFn: () => api.get<{ platformName: string; googleEnabled: boolean; appleEnabled?: boolean; signupEnabled: boolean }>('/auth/config'),
     staleTime: 5 * 60_000,
     retry: false,
   });

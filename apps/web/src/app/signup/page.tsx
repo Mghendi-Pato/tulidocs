@@ -77,7 +77,8 @@ function SignupForm() {
       )}
       <div className="space-y-3">
         <GoogleButton next={params.get('cycle') ? `/billing/?cycle=${params.get('cycle')}` : params.get('next')} country={country} label="Sign up with Google" />
-        <AppleButton next={params.get('cycle') ? `/billing/?cycle=${params.get('cycle')}` : params.get('next')} country={country} label="Sign up with Apple" />
+        {/* Apple sign-in: shown once APPLE_* is set in the API .env */}
+        {config?.appleEnabled && <AppleButton next={params.get('cycle') ? `/billing/?cycle=${params.get('cycle')}` : params.get('next')} country={country} label="Sign up with Apple" />}
       </div>
       <OrDivider />
       <form onSubmit={submit} className="space-y-4" noValidate>

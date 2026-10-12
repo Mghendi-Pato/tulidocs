@@ -66,7 +66,8 @@ function LoginForm() {
       )}
       <div className="space-y-3">
         <GoogleButton next={next} country={country} />
-        <AppleButton next={next} country={country} />
+        {/* Apple sign-in: shown once APPLE_* is set in the API .env */}
+        {config?.appleEnabled && <AppleButton next={next} country={country} />}
       </div>
       <OrDivider />
       <form onSubmit={submit} className="space-y-5" noValidate>

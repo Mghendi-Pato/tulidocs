@@ -35,7 +35,12 @@ export class PaymentsController {
     if (secret !== this.config.get<string>('MPESA_CALLBACK_SECRET', 'dev')) throw new NotFoundException();
     const r = this.mpesa.parseCallback(body);
     if (r) {
-      if (r.success) await this.checkout.completeByRef(r.checkoutRequestId, { receipt: r.receipt, raw: body });
+      if (r.success)
+        await this.checkout.completeByRef(r.checkoutRequestId, {
+          receipt: r.receipt,
+          raw: body,
+          paid: r.amount !== undefined ? { amount: r.amount, currency: 'KES' } : undefined,
+        });
       else await this.checkout.failByRef(r.checkoutRequestId, r.resultDesc || 'Payment was not completed');
     }
     return { ResultCode: 0, ResultDesc: 'Accepted' };
@@ -55,7 +60,7 @@ export class PaymentsController {
     if (event.event === 'charge.success' && event.data?.reference) {
       // verify with the API rather than trusting the payload's amount
       const v = await this.paystack.verify(event.data.reference);
-      if (v.status === 'success') await this.checkout.completeByRef(event.data.reference, { receipt: event.data.reference, raw: v.raw });
+      if (v.status === 'success') await this.checkout.completeByRef(event.data.reference, { receipt: event.data.reference, raw: v.raw, paid: { amount: v.amount, currency: v.currency } });
     }
     return { ok: true };
   }

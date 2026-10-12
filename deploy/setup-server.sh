@@ -47,20 +47,51 @@ apt-get install -y -qq ca-certificates fonts-liberation fonts-noto-color-emoji l
   libxshmfence1 >/dev/null
 apt-get install -y -qq libasound2t64 >/dev/null 2>&1 || apt-get install -y -qq libasound2 >/dev/null
 command -v pm2 >/dev/null || npm install -g pm2
-command -v redis-cli >/dev/null && redis-cli ping >/dev/null 2>&1 || warn "Redis is not answering on 127.0.0.1:6379 — install/start redis-server first."
+# Redis (shared with other apps is fine — tuli uses its own key prefix "tuli:")
+if ! redis-cli -h 127.0.0.1 -p 6379 ping 2>/dev/null | grep -q PONG; then
+  command -v redis-server >/dev/null || apt-get install -y -qq redis-server >/dev/null
+  systemctl enable --now redis-server >/dev/null 2>&1 || systemctl restart redis-server || true
+  sleep 1
+  if redis-cli -h 127.0.0.1 -p 6379 ping 2>/dev/null | grep -q PONG; then echo "Redis running on 127.0.0.1:6379."
+  else warn "Redis still not answering on 127.0.0.1:6379 (password or other port?) — set REDIS_URL in apps/api/.env"; fi
+else
+  echo "Redis OK."
+fi
 node -e 'const [a,b]=process.versions.node.split(".").map(Number); if(a<20||(a===20&&b<11)){console.error("Node "+process.versions.node+" is too old — need 20.11+ (22 recommended)");process.exit(1)}'
 
 # ── 3. Database ─────────────────────────────────────────
 say "[3/6] Postgres database '$DB_NAME'"
 DB_PASS=""
+# password from an existing production .env (URL-decoded), so a re-run keeps both in sync
+env_db_pass() {
+  [ -f "$ENV_FILE" ] || return 0
+  python3 - "$ENV_FILE" <<'PY'
+import re, sys, urllib.parse
+m = re.search(r'^DATABASE_URL="?([^"\n]+)', open(sys.argv[1]).read(), re.M)
+if m:
+    p = urllib.parse.urlparse(m.group(1)).password
+    print(urllib.parse.unquote(p) if p else "")
+PY
+}
 if sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" | grep -q 1; then
-  echo "User $DB_USER already exists — keeping it (and the DATABASE_URL in .env)."
+  EXISTING=""
+  grep -q '^NODE_ENV=production' "$ENV_FILE" 2>/dev/null && EXISTING="$(env_db_pass)"
+  if [ -n "$EXISTING" ] && [ "$EXISTING" != "CHANGE_ME" ]; then
+    sudo -u postgres psql -q -c "ALTER USER $DB_USER WITH PASSWORD '${EXISTING//\'/\'\'}';"
+    echo "User $DB_USER exists — password synced with apps/api/.env."
+  else
+    # no usable .env yet: give the user a fresh password the new .env will carry
+    DB_PASS="$(openssl rand -hex 24)"
+    sudo -u postgres psql -q -c "ALTER USER $DB_USER WITH PASSWORD '$DB_PASS';"
+    echo "User $DB_USER exists — set a new password for the new .env."
+  fi
 else
   DB_PASS="$(openssl rand -hex 24)"
   sudo -u postgres psql -q -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';"
 fi
 sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" | grep -q 1 \
   || sudo -u postgres psql -q -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;"
+sudo -u postgres psql -q -c "ALTER DATABASE $DB_NAME OWNER TO $DB_USER;"
 
 # ── 4. .env ─────────────────────────────────────────────
 say "[4/6] apps/api/.env"

@@ -144,14 +144,15 @@ export class CheckoutService {
         return { checkoutId: checkout.id, provider: pay.provider, status: 'PENDING' as const, message: 'Check your phone and enter your M-Pesa PIN to pay.' };
       }
 
-      const reference = `nvi_${checkout.id.replace(/-/g, '').slice(0, 16)}_${randomBytes(3).toString('hex')}`;
+      // prefix + metadata.product identify tuli payments in a Paystack account shared with other products
+      const reference = `tuli_${checkout.id.replace(/-/g, '').slice(0, 16)}_${randomBytes(3).toString('hex')}`;
       const { authorizationUrl } = await this.paystack.initialize({
         email: pay.email!,
         amount: input.amount,
         currency: region.currency,
         reference,
         callbackUrl: `${this.appUrl()}/payment/return/?checkout=${checkout.id}`,
-        metadata: { checkoutId: checkout.id, purpose: input.purpose },
+        metadata: { product: 'tuli', checkoutId: checkout.id, purpose: input.purpose },
       });
       await this.prisma.checkout.update({ where: { id: checkout.id }, data: { providerRef: reference } });
       return { checkoutId: checkout.id, provider: pay.provider, status: 'PENDING' as const, authorizationUrl };
@@ -202,7 +203,7 @@ export class CheckoutService {
       if (c.provider === 'CARD' && this.paystack.mode === 'live') {
         const v = await this.paystack.verify(c.providerRef);
         if (v.status === 'success') {
-          if (v.amount + 0.001 < Number(c.amount)) return this.fail(c.id, 'Amount paid does not match');
+          if (!this.paidEnough(c, v)) return this.fail(c.id, 'Amount paid does not match');
           return this.complete(c.id, { receipt: c.providerRef, raw: v.raw });
         }
         if (v.status === 'failed' || v.status === 'reversed') return this.fail(c.id, 'The card payment failed');
@@ -216,13 +217,22 @@ export class CheckoutService {
 
   // ───────────────────────── Finish ─────────────────────────
 
-  async completeByRef(providerRef: string, data: { receipt?: string; raw?: unknown }) {
+  /** `paid` (from the provider's own verify API) must cover the checkout's amount, in the same currency. */
+  async completeByRef(providerRef: string, data: { receipt?: string; raw?: unknown; paid?: { amount: number; currency: string } }) {
     const c = await this.prisma.checkout.findUnique({ where: { providerRef } });
     if (!c) {
       this.logger.warn(`Payment callback for unknown reference ${providerRef}`);
       return null;
     }
-    return this.complete(c.id, data);
+    if (data.paid && !this.paidEnough(c, data.paid)) {
+      this.logger.warn(`Checkout ${c.id}: paid ${data.paid.currency} ${data.paid.amount}, expected ${c.currency} ${c.amount}`);
+      return this.fail(c.id, 'Amount paid does not match');
+    }
+    return this.complete(c.id, { receipt: data.receipt, raw: data.raw });
+  }
+
+  private paidEnough(c: { amount: unknown; currency: string }, paid: { amount: number; currency: string }) {
+    return paid.currency.toUpperCase() === c.currency.toUpperCase() && paid.amount + 0.001 >= Number(c.amount);
   }
 
   async failByRef(providerRef: string, reason: string) {
