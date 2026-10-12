@@ -8,6 +8,7 @@ import { api, markLoggingOut } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useDoc } from '@/lib/queries';
 import { cn } from '@/lib/cn';
+import { formatDate } from '@/lib/format';
 import { initials } from '@/lib/format';
 import { IconButton } from '../ui/button';
 import { useConfirm } from '../ui/confirm';
@@ -107,7 +108,7 @@ function PlanCard() {
     return (
       <Link href="/billing/" className="block rounded-2xl bg-canvas px-4 py-3 text-[13px] hover:bg-hover">
         <span className="font-bold text-ink">{org.plan === 'PRO' ? 'Pro' : 'Starter'} plan</span>
-        <span className="block text-muted">No watermark · unlimited</span>
+        <span className="block text-muted">{org.planExpiresAt ? `Active until ${formatDate(org.planExpiresAt)}` : 'No watermark · unlimited'}</span>
       </Link>
     );
   }

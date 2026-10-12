@@ -37,7 +37,7 @@ export class BillingService {
       where: { organizationId: org.id, status: { in: ['PAID', 'FAILED'] } },
       orderBy: { createdAt: 'desc' },
       take: 20,
-      select: { id: true, purpose: true, provider: true, status: true, amount: true, currency: true, plan: true, billingCycle: true, receipt: true, createdAt: true, paidAt: true, document: { select: { number: true } } },
+      select: { id: true, purpose: true, provider: true, status: true, amount: true, currency: true, plan: true, billingCycle: true, receipt: true, createdAt: true, paidAt: true, periodStart: true, periodEnd: true, isUpgrade: true, credit: true, document: { select: { number: true } } },
     });
     const active = hasPaidPlan(org);
     return {

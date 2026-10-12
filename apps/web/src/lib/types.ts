@@ -217,7 +217,28 @@ export interface BillingOverview extends Pricing {
     plan: Plan | null;
     billingCycle: Cycle | null;
     receipt: string | null;
+    /** subscriptions: the stretch of time this payment bought */
+    periodStart: string | null;
+    periodEnd: string | null;
+    isUpgrade: boolean;
+    credit: Money | null;
     createdAt: string;
     document: { number: string } | null;
   }[];
+}
+
+/** GET /billing/quote — what a plan purchase costs today */
+export interface SubscriptionQuote {
+  kind: 'new' | 'extend' | 'upgrade';
+  plan: Plan;
+  cycle: Cycle;
+  currency: string;
+  price: number;
+  /** unused paid time credited (upgrades) */
+  credit: number;
+  creditDays: number;
+  /** what's charged */
+  amount: number;
+  periodStart: string;
+  periodEnd: string;
 }

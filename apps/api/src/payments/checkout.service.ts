@@ -2,7 +2,7 @@ import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { BillingCycle, Checkout, CheckoutProvider, Plan, Prisma } from '@prisma/client';
 import { randomBytes } from 'node:crypto';
-import { extendExpiry, hasPaidPlan, planInfo, priceOf, Region, regionFor } from '../billing/plans';
+import { changeKind, hasPaidPlan, minCharge, roundCharge, subscriptionPeriod, unusedCredit, planInfo, priceOf, Region, regionFor } from '../billing/plans';
 import { BusinessRuleException, NotFound } from '../common/errors';
 import { normalizeKenyanPhone } from '../common/phone';
 import { contentHash, isUnlocked } from '../documents/document-content';
@@ -67,19 +67,70 @@ export class CheckoutService {
     });
   }
 
+  /**
+   * What a plan purchase costs right now. Upgrades (monthly → yearly, or a higher plan) credit the unused part
+   * of what's already been paid, so the business only tops up the difference; the new period starts today.
+   */
+  async quoteSubscription(organizationId: string, plan: Plan, cycle: BillingCycle, now = new Date()) {
+    const info = planInfo(plan);
+    if (plan === 'FREE' || !info.available) throw new BusinessRuleException(`${info.name} isn’t available to buy yet`);
+    const org = await this.prisma.organization.findUniqueOrThrow({
+      where: { id: organizationId },
+      select: { country: true, plan: true, planExpiresAt: true, billingCycle: true },
+    });
+    const region = regionFor(org.country);
+    const price = priceOf(region, plan, cycle);
+    const kind = changeKind(org, plan, cycle, now);
+    if (kind === 'blocked') {
+      throw new BusinessRuleException(`You’re on ${planInfo(org.plan).name} until ${org.planExpiresAt!.toISOString().slice(0, 10)} — you can switch to ${info.name} after that.`);
+    }
+
+    let credit = 0;
+    let creditUntil: Date | null = null;
+    if (kind === 'upgrade') {
+      const paid = await this.prisma.checkout.findMany({
+        where: { organizationId, purpose: 'SUBSCRIPTION', status: 'PAID', periodEnd: { gt: now } },
+        select: { amount: true, currency: true, periodStart: true, periodEnd: true },
+      });
+      const u = unusedCredit(paid.map((p) => ({ ...p, amount: Number(p.amount) })), region.currency, now);
+      credit = u.credit;
+      creditUntil = u.until;
+    }
+    const amount = roundCharge(Math.max(0, price - credit), region.currency);
+    if (kind === 'upgrade' && amount < minCharge(region.currency)) {
+      throw new BusinessRuleException('Your paid time is already worth more than this plan — no top-up needed. You can upgrade once it runs lower.');
+    }
+    const period =
+      kind === 'upgrade' ? subscriptionPeriod(null, false, cycle, now) : subscriptionPeriod(org.planExpiresAt, kind === 'extend', cycle, now);
+    return {
+      kind,
+      plan,
+      cycle,
+      currency: region.currency,
+      price,
+      credit,
+      /** paid time the credit covers (ends when the current plan would have ended) */
+      creditDays: creditUntil ? Math.ceil((creditUntil.getTime() - now.getTime()) / 86_400_000) : 0,
+      amount,
+      periodStart: period.start,
+      periodEnd: period.end,
+    };
+  }
+
   async startSubscription(input: { organizationId: string; plan: Plan; cycle: BillingCycle; pay: PayWith }) {
     const info = planInfo(input.plan);
-    if (input.plan === 'FREE' || !info.available) throw new BusinessRuleException(`${info.name} isn’t available to buy yet`);
+    const q = await this.quoteSubscription(input.organizationId, input.plan, input.cycle);
     const org = await this.prisma.organization.findUniqueOrThrow({ where: { id: input.organizationId }, select: { country: true } });
     const region = regionFor(org.country);
     return this.start({
       purpose: 'SUBSCRIPTION',
       region,
       country: org.country,
-      amount: priceOf(region, input.plan, input.cycle),
+      amount: q.amount,
       organizationId: input.organizationId,
       plan: input.plan,
       billingCycle: input.cycle,
+      upgrade: q.kind === 'upgrade' ? { credit: q.credit } : undefined,
       accountRef: `${info.name}${input.cycle === 'YEARLY' ? 'Year' : 'Month'}`,
       description: `${info.name} plan`,
       pay: input.pay,
@@ -96,6 +147,8 @@ export class CheckoutService {
     guestToken?: string | null;
     plan?: Plan;
     billingCycle?: BillingCycle;
+    /** set when this purchase upgrades an active plan (unused time credited) */
+    upgrade?: { credit: number };
     accountRef: string;
     description: string;
     pay: PayWith;
@@ -127,6 +180,8 @@ export class CheckoutService {
         guestToken: input.guestToken ?? null,
         plan: input.plan ?? null,
         billingCycle: input.billingCycle ?? null,
+        isUpgrade: !!input.upgrade,
+        credit: input.upgrade ? input.upgrade.credit.toString() : null,
         phone,
         email: pay.email ?? null,
       },
@@ -264,10 +319,25 @@ export class CheckoutService {
       if (c.purpose === 'SUBSCRIPTION' && c.organizationId && c.plan && c.billingCycle) {
         const org = await tx.organization.findUniqueOrThrow({ where: { id: c.organizationId } });
         const same = org.plan === c.plan && hasPaidPlan(org);
+        const now = new Date();
+        // upgrade: the credited time is replaced by the new period, which starts now
+        const period = c.isUpgrade ? subscriptionPeriod(null, false, c.billingCycle, now) : subscriptionPeriod(org.planExpiresAt, same, c.billingCycle, now);
+        if (c.isUpgrade) {
+          const earlier = await tx.checkout.findMany({
+            where: { organizationId: org.id, purpose: 'SUBSCRIPTION', status: 'PAID', id: { not: c.id }, periodEnd: { gt: now } },
+            select: { id: true, periodStart: true },
+          });
+          for (const e of earlier) {
+            // running period ends today; ones that hadn't started become zero-length ("credited")
+            const end = e.periodStart && e.periodStart > now ? e.periodStart : now;
+            await tx.checkout.update({ where: { id: e.id }, data: { periodEnd: end } });
+          }
+        }
         await tx.organization.update({
           where: { id: org.id },
-          data: { plan: c.plan, billingCycle: c.billingCycle, planExpiresAt: extendExpiry(org.planExpiresAt, same, c.billingCycle) },
+          data: { plan: c.plan, billingCycle: c.billingCycle, planExpiresAt: period.end },
         });
+        await tx.checkout.update({ where: { id: c.id }, data: { periodStart: period.start, periodEnd: period.end } });
       }
       this.logger.log(`Checkout ${id} paid (${c.purpose}, ${c.currency} ${c.amount})`);
       return c;

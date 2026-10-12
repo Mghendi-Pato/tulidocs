@@ -324,6 +324,12 @@ model Checkout {
   failureReason  String?
   raw            Json?
   paidAt         DateTime?
+  /// Subscriptions: the stretch of time this payment bought (top-ups stack after the current end date)
+  periodStart    DateTime?
+  periodEnd      DateTime?
+  /// Upgrade (e.g. monthly → yearly): unused paid time credited against this payment; the new period starts at payment
+  isUpgrade      Boolean          @default(false)
+  credit         Decimal?         @db.Decimal(18, 2)
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
 

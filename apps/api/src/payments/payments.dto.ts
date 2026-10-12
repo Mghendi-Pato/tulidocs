@@ -35,3 +35,11 @@ export class SubscribeDto extends PayDto {
   @IsEnum(BillingCycle)
   cycle: BillingCycle;
 }
+
+export class QuoteDto {
+  @IsEnum(Plan)
+  plan: Plan;
+
+  @IsEnum(BillingCycle)
+  cycle: BillingCycle;
+}

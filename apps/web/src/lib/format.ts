@@ -86,3 +86,15 @@ export function priceLabel(amount: number, currency: string) {
     return `${currency} ${amount.toLocaleString('en')}`;
   }
 }
+
+/** Whole days from now until `value` (0 if past) */
+export function daysUntil(value: string | null | undefined) {
+  if (!value) return 0;
+  return Math.max(0, Math.ceil((new Date(value).getTime() - Date.now()) / 86_400_000));
+}
+
+/** "92 days left" / "1 day left" / "ends today" */
+export function daysLeftLabel(value: string | null | undefined) {
+  const d = daysUntil(value);
+  return d === 0 ? 'ends today' : d === 1 ? '1 day left' : `${d} days left`;
+}
