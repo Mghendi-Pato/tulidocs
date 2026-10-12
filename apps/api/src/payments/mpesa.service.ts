@@ -37,6 +37,14 @@ export class MpesaService {
     private readonly redis: RedisService,
   ) {}
 
+  /**
+   * Who runs M-Pesa payments: 'paystack' (default — M-Pesa tab in the same Paystack popup as cards)
+   * or 'daraja' (STK push straight from Safaricom, needs MPESA_* Daraja credentials).
+   */
+  get gateway(): 'paystack' | 'daraja' {
+    return this.config.get<string>('MPESA_GATEWAY', 'paystack') === 'daraja' ? 'daraja' : 'paystack';
+  }
+
   get mode(): 'mock' | 'sandbox' | 'live' {
     const m = this.config.get<string>('MPESA_MODE', 'mock');
     return m === 'live' || m === 'sandbox' ? m : 'mock';

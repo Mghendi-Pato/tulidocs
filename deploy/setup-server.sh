@@ -137,9 +137,11 @@ APPLE_REDIRECT_URI=https://$DOMAIN/api/auth/apple/callback
 CHROME_PATH=
 RENDER_CONCURRENCY=2
 
-# ── Payments ── mock until live keys are added. ALLOW_MOCK_PAYMENTS=true lets the API start in production with
-# mock payments (anyone can unlock/subscribe for free) — TESTING ONLY: set MPESA_MODE/CARD_MODE to live and remove it before launch.
+# ── Payments ── Paystack handles cards and M-Pesa (MPESA_GATEWAY=paystack). Mock until PAYSTACK_SECRET_KEY is added:
+# ALLOW_MOCK_PAYMENTS=true lets production start with mock payments (anyone can pay for free) — TESTING ONLY:
+# set CARD_MODE=live + PAYSTACK_SECRET_KEY and delete ALLOW_MOCK_PAYMENTS before launch.
 ALLOW_MOCK_PAYMENTS=true
+MPESA_GATEWAY=paystack
 MPESA_MODE=mock
 MPESA_CONSUMER_KEY=
 MPESA_CONSUMER_SECRET=

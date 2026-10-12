@@ -8,9 +8,12 @@ export function validateEnv(config: Record<string, unknown>) {
     if (/change-me|dev-secret/i.test(secret)) errors.push('JWT_SECRET must be changed for production');
     // Mock payments hand out paid features for free, so production needs an explicit, temporary opt-in (testing phase)
     const allowMock = String(config.ALLOW_MOCK_PAYMENTS ?? '').toLowerCase() === 'true';
-    const mock = [config.MPESA_MODE ?? 'mock', config.CARD_MODE ?? 'mock'].includes('mock');
+    // M-Pesa through Paystack (default) follows CARD_MODE; Daraja M-Pesa has its own MPESA_MODE
+    const daraja = config.MPESA_GATEWAY === 'daraja';
+    const mpesaMock = daraja && (config.MPESA_MODE ?? 'mock') === 'mock';
+    const mock = mpesaMock || (config.CARD_MODE ?? 'mock') === 'mock';
     if (mock && !allowMock) {
-      if ((config.MPESA_MODE ?? 'mock') === 'mock') errors.push('MPESA_MODE=mock is not allowed in production (set ALLOW_MOCK_PAYMENTS=true only while testing)');
+      if (mpesaMock) errors.push('MPESA_MODE=mock is not allowed in production (set ALLOW_MOCK_PAYMENTS=true only while testing)');
       if ((config.CARD_MODE ?? 'mock') === 'mock') errors.push('CARD_MODE=mock is not allowed in production (set ALLOW_MOCK_PAYMENTS=true only while testing)');
     }
     if (mock && allowMock) {

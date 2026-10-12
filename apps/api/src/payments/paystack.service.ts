@@ -19,6 +19,11 @@ export class PaystackService {
 
   constructor(private readonly config: ConfigService) {}
 
+  /** References we create for Paystack (card and, by default, M-Pesa) */
+  static isPaystackRef(ref: string | null | undefined) {
+    return !!ref && /^(tuli|nvi)_/.test(ref);
+  }
+
   get mode(): 'mock' | 'live' {
     return this.config.get<string>('CARD_MODE', 'mock') === 'live' ? 'live' : 'mock';
   }
@@ -29,7 +34,16 @@ export class PaystackService {
     return s;
   }
 
-  async initialize(input: { email: string; amount: number; currency: string; reference: string; callbackUrl: string; metadata: Record<string, unknown> }) {
+  async initialize(input: {
+    email: string;
+    amount: number;
+    currency: string;
+    reference: string;
+    callbackUrl: string;
+    metadata: Record<string, unknown>;
+    /** card | mobile_money (M-Pesa in Kenya) */
+    channels?: string[];
+  }) {
     if (this.mode === 'mock') {
       const api = this.config.get<string>('API_PUBLIC_URL', 'http://localhost:3000/api');
       return { authorizationUrl: `${api}/payments/card/mock?reference=${encodeURIComponent(input.reference)}`, accessCode: undefined as string | undefined };
@@ -43,7 +57,7 @@ export class PaystackService {
         currency: input.currency,
         reference: input.reference,
         callback_url: input.callbackUrl,
-        channels: ['card'],
+        channels: input.channels ?? ['card'],
         metadata: input.metadata,
       }),
     });

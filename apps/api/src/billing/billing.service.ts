@@ -25,7 +25,9 @@ export class BillingService {
       freeMonthlyDocs: FREE_MONTHLY_DOCS,
       plans: PLANS.map((p) => ({ ...p, prices: p.id === 'FREE' ? null : region.prices[p.id] })),
       providers: region.providers,
-      modes: { mpesa: this.mpesa.mode, card: this.paystack.mode },
+      modes: { mpesa: this.mpesa.gateway === 'paystack' ? this.paystack.mode : this.mpesa.mode, card: this.paystack.mode },
+      /** 'paystack' → M-Pesa opens in the Paystack window (no phone field on our side) */
+      mpesaVia: this.mpesa.gateway,
     };
   }
 

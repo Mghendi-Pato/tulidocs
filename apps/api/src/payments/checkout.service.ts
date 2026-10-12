@@ -104,10 +104,12 @@ export class CheckoutService {
     if (!region.providers.includes(pay.provider)) {
       throw new BadRequestException({ code: 'PROVIDER_UNAVAILABLE', message: pay.provider === 'MPESA' ? 'M-Pesa is only available in Kenya. Pay by card instead.' : 'This payment method isn’t available here' });
     }
+    // M-Pesa through Paystack: the customer enters their number in Paystack's window, so no phone needed here
+    const viaPaystack = pay.provider === 'CARD' || this.mpesa.gateway === 'paystack';
     let phone: string | null = null;
     if (pay.provider === 'MPESA') {
       phone = normalizeKenyanPhone(pay.phone ?? '');
-      if (!phone) throw new BadRequestException({ code: 'VALIDATION_ERROR', message: 'Enter a valid Safaricom number, e.g. 0712 345 678' });
+      if (!phone && !viaPaystack) throw new BadRequestException({ code: 'VALIDATION_ERROR', message: 'Enter a valid Safaricom number, e.g. 0712 345 678' });
     }
     if (pay.provider === 'CARD' && !pay.email) {
       throw new BadRequestException({ code: 'VALIDATION_ERROR', message: 'Enter an email address for the card receipt' });
@@ -131,7 +133,7 @@ export class CheckoutService {
     });
 
     try {
-      if (pay.provider === 'MPESA') {
+      if (pay.provider === 'MPESA' && !viaPaystack) {
         const stk = await this.mpesa.stkPush({
           phone: phone!,
           amount: input.amount,
@@ -147,12 +149,14 @@ export class CheckoutService {
       // prefix + metadata.product identify tuli payments in a Paystack account shared with other products
       const reference = `tuli_${checkout.id.replace(/-/g, '').slice(0, 16)}_${randomBytes(3).toString('hex')}`;
       const { authorizationUrl, accessCode } = await this.paystack.initialize({
-        email: pay.email!,
+        // Paystack needs an email; M-Pesa guests don't give one, so use a per-checkout placeholder
+        email: pay.email || `mpesa-${checkout.id.slice(0, 8)}@customers.tulidocs.com`,
+        channels: pay.provider === 'MPESA' ? ['mobile_money'] : ['card'],
         amount: input.amount,
         currency: region.currency,
         reference,
         callbackUrl: `${this.appUrl()}/payment/return/?checkout=${checkout.id}`,
-        metadata: { product: 'tuli', checkoutId: checkout.id, purpose: input.purpose },
+        metadata: { product: 'tuli', checkoutId: checkout.id, purpose: input.purpose, method: pay.provider },
       });
       await this.prisma.checkout.update({ where: { id: checkout.id }, data: { providerRef: reference } });
       // accessCode → in-page popup; authorizationUrl → redirect fallback (and mock mode)
@@ -194,25 +198,26 @@ export class CheckoutService {
     if (lock !== 'OK') return c;
 
     try {
-      if (c.provider === 'MPESA' && this.mpesa.mode !== 'mock' && age > 20_000) {
+      const paystackRef = PaystackService.isPaystackRef(c.providerRef);
+      if (c.provider === 'MPESA' && !paystackRef && this.mpesa.mode !== 'mock' && age > 20_000) {
         const r = await this.mpesa.stkQuery(c.providerRef);
         if (!r.pending) {
           if (r.success) return this.complete(c.id, { receipt: c.receipt ?? undefined, raw: r });
           return this.fail(c.id, r.resultDesc || 'Payment was not completed');
         }
       }
-      if (c.provider === 'CARD' && this.paystack.mode === 'live') {
+      if (paystackRef && this.paystack.mode === 'live') {
         const v = await this.paystack.verify(c.providerRef);
         if (v.status === 'success') {
           if (!this.paidEnough(c, v)) return this.fail(c.id, 'Amount paid does not match');
           return this.complete(c.id, { receipt: c.providerRef, raw: v.raw });
         }
-        if (v.status === 'failed' || v.status === 'reversed') return this.fail(c.id, 'The card payment failed');
+        if (v.status === 'failed' || v.status === 'reversed') return this.fail(c.id, c.provider === 'MPESA' ? 'The M-Pesa payment failed' : 'The card payment failed');
       }
     } catch (e) {
       this.logger.warn(`Reconcile ${c.id} failed: ${e instanceof Error ? e.message : e}`);
     }
-    if (age > PENDING_TIMEOUT_MS && c.provider === 'MPESA') return this.fail(c.id, 'No response from M-Pesa. If money left your account, contact support with your M-Pesa message.');
+    if (age > PENDING_TIMEOUT_MS && c.provider === 'MPESA' && !PaystackService.isPaystackRef(c.providerRef)) return this.fail(c.id, 'No response from M-Pesa. If money left your account, contact support with your M-Pesa message.');
     return c;
   }
 

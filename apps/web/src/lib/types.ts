@@ -173,6 +173,8 @@ export interface Pricing {
   unlockPrice: number;
   freeMonthlyDocs: number;
   providers: Provider[];
+  /** 'paystack' → M-Pesa opens in the Paystack window; 'daraja' → STK push to the number we collect */
+  mpesaVia?: 'paystack' | 'daraja';
 }
 
 export interface CheckoutStart {
