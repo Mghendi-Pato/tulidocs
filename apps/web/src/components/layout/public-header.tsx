@@ -65,9 +65,15 @@ export function PublicFooter() {
     <footer className="border-t border-line">
       <div className="mx-auto flex max-w-[1200px] flex-col gap-3 px-4 py-8 text-[13px] text-muted sm:flex-row sm:items-center sm:justify-between sm:px-6">
         <Logo className="text-[16px]" />
-        <div className="flex items-center gap-5">
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
           <Link href="/feedback/" className="font-semibold hover:text-ink">
             Feedback &amp; ideas
+          </Link>
+          <Link href="/terms/" className="font-semibold hover:text-ink">
+            Terms
+          </Link>
+          <Link href="/privacy/" className="font-semibold hover:text-ink">
+            Privacy
           </Link>
           <span>© {new Date().getFullYear()} Nubian Networks Limited</span>
         </div>

@@ -1,6 +1,6 @@
 'use client';
 
-import { ChevronDown, CreditCard, Lightbulb, FileCheck2, FileText, Home, LogOut, Menu as MenuIcon, Plus, Receipt, Settings, Sparkles, Users, X } from 'lucide-react';
+import { ChevronDown, CreditCard, Lightbulb, ScrollText, ShieldCheck, FileCheck2, FileText, Home, LogOut, Menu as MenuIcon, Plus, Receipt, Settings, Sparkles, Users, X } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { ReactNode, Suspense, useEffect, useState } from 'react';
@@ -168,6 +168,8 @@ function ProfileMenu() {
         { label: 'Settings', icon: <Settings />, onSelect: () => router.push('/settings/') },
         { label: 'Plan & billing', icon: <CreditCard />, onSelect: () => router.push('/billing/') },
         { label: 'Feedback & ideas', icon: <Lightbulb />, onSelect: () => router.push('/#feedback') },
+        { label: 'Terms of service', icon: <ScrollText />, onSelect: () => router.push('/terms/') },
+        { label: 'Privacy policy', icon: <ShieldCheck />, onSelect: () => router.push('/privacy/') },
         { label: 'Log out', icon: <LogOut />, onSelect: () => void askLogout() },
       ]}
     />

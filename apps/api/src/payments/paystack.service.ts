@@ -69,6 +69,33 @@ export class PaystackService {
     return { authorizationUrl: body.data.authorization_url, accessCode: body.data.access_code as string | undefined };
   }
 
+  /**
+   * M-Pesa straight to the customer's phone (Paystack Charge API, mobile_money/mpesa) — no Paystack window,
+   * no other wallets on show. The customer approves the STK prompt; we then verify the reference.
+   * Throws if Paystack refuses (caller falls back to the popup).
+   */
+  async chargeMpesa(input: { email: string; amount: number; currency: string; reference: string; phone: string; metadata: Record<string, unknown> }) {
+    if (this.mode === 'mock') return { status: 'pay_offline', displayText: undefined as string | undefined };
+    const res = await fetch(`${this.base}/charge`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${this.secret}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: input.email,
+        amount: Math.round(input.amount * 100),
+        currency: input.currency,
+        reference: input.reference,
+        metadata: input.metadata,
+        mobile_money: { phone: `+${input.phone}`, provider: 'mpesa' },
+      }),
+    });
+    const body = (await res.json().catch(() => ({}))) as { status?: boolean; message?: string; data?: { status?: string; display_text?: string; message?: string } };
+    if (!res.ok || !body.status || !body.data) {
+      this.logger.warn(`Paystack M-Pesa charge failed: ${res.status} ${body.message}`);
+      throw new ServiceUnavailableException({ code: 'MPESA_UNAVAILABLE', message: body.message ?? 'Could not start the M-Pesa payment' });
+    }
+    return { status: body.data.status ?? 'pending', displayText: body.data.display_text ?? body.data.message };
+  }
+
   /** success | failed | abandoned | pending … */
   async verify(reference: string): Promise<{ status: string; amount: number; currency: string; raw: unknown }> {
     const res = await fetch(`${this.base}/transaction/verify/${encodeURIComponent(reference)}`, { headers: { Authorization: `Bearer ${this.secret}` } });

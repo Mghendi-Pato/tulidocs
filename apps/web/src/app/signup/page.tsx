@@ -94,6 +94,17 @@ function SignupForm() {
         <Button type="submit" size="lg" className="w-full rounded-lg" loading={busy}>
           Create free account {!busy && <ArrowRight className="size-[18px]" />}
         </Button>
+        <p className="mt-3 text-center text-[12.5px] text-muted">
+          By creating an account you agree to our{' '}
+          <Link href="/terms/" className="link">
+            Terms
+          </Link>{' '}
+          and{' '}
+          <Link href="/privacy/" className="link">
+            Privacy Policy
+          </Link>
+          .
+        </p>
         <p className="text-center text-[13px] text-muted">Free plan: {`10 documents a month`}. Upgrade any time.</p>
       </form>
       <p className="mt-6 text-center text-[15px] text-ink-soft">

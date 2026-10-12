@@ -4,7 +4,6 @@ import { CheckCircle2, CreditCard, Smartphone, XCircle } from 'lucide-react';
 import { ReactNode, useEffect, useRef, useState } from 'react';
 import { api, errorMessage } from '@/lib/api';
 import { payWithPopup, preloadPaystack } from '@/lib/paystack';
-import { usePricing } from '@/lib/queries';
 import { cn } from '@/lib/cn';
 import type { CheckoutStart, CheckoutStatus, Provider } from '@/lib/types';
 import { Button } from '../ui/button';
@@ -53,9 +52,6 @@ export function PayDialog({
   const [checkoutId, setCheckoutId] = useState<string | null>(null);
   /** which "waiting" copy to show */
   const [waitingFor, setWaitingFor] = useState<'phone' | 'card'>('phone');
-  const { data: pricing } = usePricing();
-  /** M-Pesa runs inside Paystack's window (default) — the customer types their number there */
-  const mpesaInPopup = pricing?.mpesaVia !== 'daraja';
   const onPaidRef = useRef(onPaid);
   onPaidRef.current = onPaid;
 
@@ -103,7 +99,7 @@ export function PayDialog({
     setError(null);
     setBusy(true);
     try {
-      const r = await start({ provider, phone: provider === 'MPESA' && !mpesaInPopup ? phone : undefined, email: provider === 'CARD' ? email : undefined });
+      const r = await start({ provider, phone: provider === 'MPESA' ? phone : undefined, email: provider === 'CARD' ? email : undefined });
       if (r.accessCode) {
         // Card: Paystack's window opens over this page
         let outcome: 'success' | 'cancelled';
@@ -224,16 +220,12 @@ export function PayDialog({
             ))}
           </div>
           )}
-          {provider === 'MPESA' && mpesaInPopup ? (
-            <p className="rounded-xl bg-sidebar px-4 py-3 text-sm text-muted">
-              A secure Paystack window opens — enter your M-Pesa number there and approve the prompt on your phone. You stay on this page.
-            </p>
-          ) : provider === 'MPESA' ? (
+          {provider === 'MPESA' ? (
             <Field label="M-Pesa phone number" hint="You’ll get a prompt to enter your M-Pesa PIN">
               {(id) => <Input id={id} inputMode="tel" autoComplete="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="0712 345 678" />}
             </Field>
           ) : (
-            <Field label="Email for the receipt" hint="A secure Paystack window opens for your card details — you stay on this page">
+            <Field label="Email for the receipt" hint="A secure payment window opens for your card details — you stay on this page">
               {(id) => <Input id={id} type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@business.com" />}
             </Field>
           )}
