@@ -392,7 +392,7 @@ function DeleteAccount({ email }: { email: string }) {
         <h3 className="text-sm font-bold text-danger">Delete account</h3>
         <p className="mt-0.5 text-sm text-muted">Close your account and business for good. We’ll ask you to confirm by email.</p>
       </div>
-      <Button variant="secondary" onClick={ask} className="shrink-0 !border-danger/40 !text-danger hover:!border-danger">
+      <Button variant="danger" onClick={ask} className="shrink-0">
         <Trash2 className="size-4" /> Delete account
       </Button>
     </div>
