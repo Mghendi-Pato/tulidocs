@@ -8,7 +8,8 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
  *  - CARD_MODE=mock → no network; the "card page" is a local URL that marks the payment as paid (dev only)
  *  - CARD_MODE=live → PAYSTACK_SECRET_KEY (sk_test_… for test mode, sk_live_… for live)
  *
- * Flow: initialize → redirect customer to authorization_url → Paystack redirects back to our return page
+ * Flow: initialize → the web app opens Paystack's popup with access_code (customer stays on tuli)
+ *   — or, if the popup can't load, redirects to authorization_url and Paystack sends them back to our return page —
  * → we verify the reference (and the charge.success webhook confirms it again, idempotently).
  */
 @Injectable()
@@ -31,7 +32,7 @@ export class PaystackService {
   async initialize(input: { email: string; amount: number; currency: string; reference: string; callbackUrl: string; metadata: Record<string, unknown> }) {
     if (this.mode === 'mock') {
       const api = this.config.get<string>('API_PUBLIC_URL', 'http://localhost:3000/api');
-      return { authorizationUrl: `${api}/payments/card/mock?reference=${encodeURIComponent(input.reference)}` };
+      return { authorizationUrl: `${api}/payments/card/mock?reference=${encodeURIComponent(input.reference)}`, accessCode: undefined as string | undefined };
     }
     const res = await fetch(`${this.base}/transaction/initialize`, {
       method: 'POST',
@@ -46,12 +47,12 @@ export class PaystackService {
         metadata: input.metadata,
       }),
     });
-    const body = (await res.json().catch(() => ({}))) as { status?: boolean; message?: string; data?: { authorization_url: string } };
+    const body = (await res.json().catch(() => ({}))) as { status?: boolean; message?: string; data?: { authorization_url: string; access_code: string } };
     if (!res.ok || !body.status || !body.data) {
       this.logger.warn(`Paystack initialize failed: ${res.status} ${body.message}`);
       throw new ServiceUnavailableException({ code: 'CARD_UNAVAILABLE', message: body.message ?? 'Could not start the card payment' });
     }
-    return { authorizationUrl: body.data.authorization_url };
+    return { authorizationUrl: body.data.authorization_url, accessCode: body.data.access_code as string | undefined };
   }
 
   /** success | failed | abandoned | pending … */

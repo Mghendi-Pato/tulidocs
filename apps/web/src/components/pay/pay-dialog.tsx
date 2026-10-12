@@ -3,6 +3,7 @@
 import { CheckCircle2, CreditCard, Smartphone, XCircle } from 'lucide-react';
 import { ReactNode, useEffect, useRef, useState } from 'react';
 import { api, errorMessage } from '@/lib/api';
+import { payWithPopup, preloadPaystack } from '@/lib/paystack';
 import { cn } from '@/lib/cn';
 import type { CheckoutStart, CheckoutStatus, Provider } from '@/lib/types';
 import { Button } from '../ui/button';
@@ -13,8 +14,10 @@ import { Spinner } from '../ui/spinner';
 type Stage = 'form' | 'waiting' | 'paid' | 'failed';
 
 /**
- * Pay the platform: card everywhere (redirect to the card page, which returns to /payment/return),
- * plus M-Pesa where the region offers it (STK prompt on the phone; we poll until it's confirmed).
+ * Pay the platform without leaving the page:
+ *  - card: Paystack's secure popup opens over tuli; when it closes we confirm with the server
+ *    (falls back to Paystack's hosted page + /payment/return if the popup can't load)
+ *  - M-Pesa where the region offers it: STK prompt on the phone; we poll until it's confirmed.
  */
 export function PayDialog({
   open,
@@ -47,6 +50,8 @@ export function PayDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [checkoutId, setCheckoutId] = useState<string | null>(null);
+  /** which "waiting" copy to show */
+  const [waitingFor, setWaitingFor] = useState<'phone' | 'card'>('phone');
   const onPaidRef = useRef(onPaid);
   onPaidRef.current = onPaid;
 
@@ -56,6 +61,7 @@ export function PayDialog({
       setStage('form');
       setError(null);
       setCheckoutId(null);
+      if (providers.includes('CARD')) preloadPaystack();
     }
   }, [open]);
 
@@ -80,25 +86,46 @@ export function PayDialog({
       } catch {
         /* keep polling through blips */
       }
-      if (!stop) timer = setTimeout(tick, 2500);
+      if (!stop) timer = setTimeout(tick, waitingFor === 'card' ? 1500 : 2500);
     };
-    let timer = setTimeout(tick, 2500);
+    let timer = setTimeout(tick, waitingFor === 'card' ? 300 : 2500);
     return () => {
       stop = true;
       clearTimeout(timer);
     };
-  }, [stage, checkoutId]);
+  }, [stage, checkoutId, waitingFor]);
 
   const submit = async () => {
     setError(null);
     setBusy(true);
     try {
       const r = await start({ provider, phone: provider === 'MPESA' ? phone : undefined, email: provider === 'CARD' ? email : undefined });
+      if (r.accessCode) {
+        // Card: Paystack's window opens over this page
+        let outcome: 'success' | 'cancelled';
+        try {
+          outcome = await payWithPopup(r.accessCode);
+        } catch {
+          // popup blocked / script unavailable → Paystack's hosted page, which returns to /payment/return
+          if (r.authorizationUrl) window.location.href = r.authorizationUrl;
+          return;
+        }
+        if (outcome === 'cancelled') {
+          setError('Payment cancelled — no money was taken. You can try again.');
+          setStage('form');
+          return;
+        }
+        setCheckoutId(r.checkoutId);
+        setWaitingFor('card');
+        setStage('waiting');
+        return;
+      }
       if (r.authorizationUrl) {
         window.location.href = r.authorizationUrl;
         return;
       }
       setCheckoutId(r.checkoutId);
+      setWaitingFor('phone');
       setStage('waiting');
     } catch (e) {
       setError(errorMessage(e));
@@ -137,10 +164,19 @@ export function PayDialog({
           <span className="flex size-16 items-center justify-center rounded-full bg-primary-soft text-primary">
             <Spinner className="size-7" />
           </span>
-          <h3 className="mt-5 text-lg font-extrabold">Check your phone</h3>
-          <p className="mt-1 max-w-sm text-sm text-muted">
-            We sent an M-Pesa prompt to <span className="font-semibold text-ink">{phone}</span>. Enter your M-Pesa PIN to pay {amountLabel}. This page updates by itself.
-          </p>
+          {waitingFor === 'card' ? (
+            <>
+              <h3 className="mt-5 text-lg font-extrabold">Confirming your payment…</h3>
+              <p className="mt-1 max-w-sm text-sm text-muted">This takes a few seconds.</p>
+            </>
+          ) : (
+            <>
+              <h3 className="mt-5 text-lg font-extrabold">Check your phone</h3>
+              <p className="mt-1 max-w-sm text-sm text-muted">
+                We sent an M-Pesa prompt to <span className="font-semibold text-ink">{phone}</span>. Enter your M-Pesa PIN to pay {amountLabel}. This page updates by itself.
+              </p>
+            </>
+          )}
         </div>
       ) : stage === 'paid' ? (
         <div className="flex flex-col items-center py-6 text-center">
@@ -189,7 +225,7 @@ export function PayDialog({
               {(id) => <Input id={id} inputMode="tel" autoComplete="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="0712 345 678" />}
             </Field>
           ) : (
-            <Field label="Email for the receipt" hint="You’ll be taken to a secure card page (Visa, Mastercard and more)">
+            <Field label="Email for the receipt" hint="A secure Paystack window opens for your card details — you stay on this page">
               {(id) => <Input id={id} type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@business.com" />}
             </Field>
           )}

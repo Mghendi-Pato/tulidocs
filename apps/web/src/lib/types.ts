@@ -181,6 +181,8 @@ export interface CheckoutStart {
   status: 'PENDING';
   message?: string;
   authorizationUrl?: string;
+  /** Paystack access code — opens the in-page popup */
+  accessCode?: string;
 }
 
 export interface CheckoutStatus {

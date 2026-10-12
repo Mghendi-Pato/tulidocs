@@ -146,7 +146,7 @@ export class CheckoutService {
 
       // prefix + metadata.product identify tuli payments in a Paystack account shared with other products
       const reference = `tuli_${checkout.id.replace(/-/g, '').slice(0, 16)}_${randomBytes(3).toString('hex')}`;
-      const { authorizationUrl } = await this.paystack.initialize({
+      const { authorizationUrl, accessCode } = await this.paystack.initialize({
         email: pay.email!,
         amount: input.amount,
         currency: region.currency,
@@ -155,7 +155,8 @@ export class CheckoutService {
         metadata: { product: 'tuli', checkoutId: checkout.id, purpose: input.purpose },
       });
       await this.prisma.checkout.update({ where: { id: checkout.id }, data: { providerRef: reference } });
-      return { checkoutId: checkout.id, provider: pay.provider, status: 'PENDING' as const, authorizationUrl };
+      // accessCode → in-page popup; authorizationUrl → redirect fallback (and mock mode)
+      return { checkoutId: checkout.id, provider: pay.provider, status: 'PENDING' as const, authorizationUrl, accessCode };
     } catch (e) {
       await this.prisma.checkout.update({ where: { id: checkout.id }, data: { status: 'FAILED', failureReason: e instanceof Error ? e.message : 'Could not start payment' } });
       throw e;
