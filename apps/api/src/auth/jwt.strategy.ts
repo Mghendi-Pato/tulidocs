@@ -31,9 +31,11 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     const ended = () => new UnauthorizedException({ code: 'UNAUTHORIZED', message: 'Your session has ended. Please sign in again.' });
     const user = await this.prisma.user.findUnique({
       where: { id: payload.sub },
-      select: { id: true, organizationId: true, email: true, name: true, role: true, isActive: true, organization: { select: { status: true } } },
+      select: { id: true, organizationId: true, email: true, name: true, role: true, isActive: true, passwordChangedAt: true, organization: { select: { status: true } } },
     });
     if (!user || !user.isActive || (user.organizationId ?? null) !== (payload.org ?? null)) throw ended();
+    // password reset/changed after this session was issued → sign this device out
+    if (user.passwordChangedAt && payload.iat !== undefined && payload.iat < Math.floor(user.passwordChangedAt.getTime() / 1000)) throw ended();
     if (user.role !== 'SYSTEM_ADMIN' && user.organization?.status === 'SUSPENDED') {
       throw new UnauthorizedException({ code: 'TENANT_SUSPENDED', message: 'This business account is suspended. Please contact tuli support.' });
     }

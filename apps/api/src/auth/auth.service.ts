@@ -4,7 +4,7 @@ import { JwtService } from '@nestjs/jwt';
 import type { User } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { OAuth2Client } from 'google-auth-library';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { FREE_MONTHLY_DOCS, hasPaidPlan } from '../billing/plans';
 import { BRAND } from '../common/brand';
 import { countryInfo, defaultCurrency } from '../common/countries';
@@ -15,6 +15,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { AppleConfig, appleAuthorizeUrl, appleExchange } from './apple';
 import { ChangePasswordDto, SignupDto } from './dto/auth.dto';
+import { emailLayout, escapeHtml, MailService } from '../mail/mail.service';
 
 const GOOGLE_STATE_TTL = 10 * 60;
 
@@ -28,6 +29,7 @@ export class AuthService {
     private readonly config: ConfigService,
     private readonly redis: RedisService,
     private readonly guest: GuestService,
+    private readonly mail: MailService,
   ) {}
 
   private sign(user: Pick<User, 'id' | 'organizationId'>) {
@@ -106,13 +108,115 @@ export class AuthService {
     });
   }
 
+  /** Changes the password and signs out every other device; returns a fresh session for this one. */
   async changePassword(user: AuthUser, dto: ChangePasswordDto) {
     const u = await this.prisma.user.findUniqueOrThrow({ where: { id: user.id } });
     if (u.passwordHash && !(dto.currentPassword && (await bcrypt.compare(dto.currentPassword, u.passwordHash)))) {
       throw new BadRequestException({ code: 'WRONG_PASSWORD', message: 'Your current password is incorrect' });
     }
-    await this.prisma.user.update({ where: { id: u.id }, data: { passwordHash: await bcrypt.hash(dto.newPassword, 11) } });
-    return { ok: true };
+    const updated = await this.setPassword(u.id, dto.newPassword);
+    void this.sendPasswordChanged(updated.email, updated.name);
+    return { token: this.sign(updated) };
+  }
+
+  // ───────────────────────── Password reset ─────────────────────────
+
+  private resetKey = (hash: string) => `pwreset:${hash}`;
+  private resetUserKey = (userId: string) => `pwreset:user:${userId}`;
+  private static RESET_TTL = 60 * 60; // 1 hour
+
+  /**
+   * Emails a one-time reset link. Always answers the same way, so it can't be used to find out who has an account.
+   * At most 3 emails per address per hour.
+   */
+  async forgotPassword(email: string) {
+    const ok = { ok: true as const };
+    const addr = email.trim().toLowerCase();
+    const sent = await this.redis.client.incr(this.redis.key(`pwreset:count:${addr}`));
+    if (sent === 1) await this.redis.client.expire(this.redis.key(`pwreset:count:${addr}`), 3600);
+    if (sent > 3) return ok;
+
+    const user = await this.prisma.user.findUnique({ where: { email: addr } });
+    if (!user || !user.isActive) return ok;
+
+    const token = randomBytes(32).toString('base64url');
+    const hash = createHash('sha256').update(token).digest('hex');
+    // one live link per user: a new request cancels the previous link
+    const previous = await this.redis.getJson<string>(this.resetUserKey(user.id));
+    if (previous) await this.redis.del(this.resetKey(previous));
+    await this.redis.setJson(this.resetKey(hash), user.id, AuthService.RESET_TTL);
+    await this.redis.setJson(this.resetUserKey(user.id), hash, AuthService.RESET_TTL);
+
+    const url = `${this.appUrl()}/reset-password/?token=${token}`;
+    const first = (user.name || '').split(/\s+/)[0] || 'there';
+    await this.mail.send({
+      to: user.email,
+      subject: 'Reset your tuli password',
+      text: `Hi ${first},\n\nUse this link to choose a new password for tuli. It works once and expires in 60 minutes:\n${url}\n\nIf you didn't ask for this, ignore this email — your password stays the same.`,
+      html: emailLayout({
+        heading: 'Reset your password',
+        paragraphs: [
+          `Hi ${escapeHtml(first)},`,
+          'We received a request to reset the password for your tuli account. Click the button to choose a new one. The link works once and expires in 60 minutes.',
+        ],
+        button: { label: 'Choose a new password', url },
+        footnote: 'Didn’t ask for this? You can ignore this email — your password stays the same.',
+      }),
+    });
+    return ok;
+  }
+
+  /** Is a reset link still usable? (lets the page say "expired" before the user types a new password) */
+  async checkResetToken(token: string) {
+    const userId = await this.redis.getJson<string>(this.resetKey(createHash('sha256').update(token).digest('hex')));
+    if (!userId) return { valid: false as const };
+    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { email: true, isActive: true } });
+    if (!user?.isActive) return { valid: false as const };
+    const [name, domain] = user.email.split('@');
+    return { valid: true as const, email: `${name.slice(0, 2)}${'•'.repeat(Math.max(1, name.length - 2))}@${domain}` };
+  }
+
+  /** Sets the new password, burns the link, signs out other devices and signs this one in. */
+  async resetPassword(token: string, password: string) {
+    const hash = createHash('sha256').update(token).digest('hex');
+    const userId = await this.redis.take<string>(this.resetKey(hash));
+    if (!userId) throw new BadRequestException({ code: 'RESET_EXPIRED', message: 'This reset link has expired or was already used. Request a new one.' });
+    await this.redis.del(this.resetUserKey(userId));
+    const existing = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!existing?.isActive) throw new BadRequestException({ code: 'RESET_EXPIRED', message: 'This reset link has expired or was already used. Request a new one.' });
+    const user = await this.setPassword(userId, password);
+    void this.sendPasswordChanged(user.email, user.name);
+    return { token: this.sign(user), user: { id: user.id, name: user.name, email: user.email } };
+  }
+
+  private async setPassword(userId: string, password: string) {
+    // stamped one second back so the session issued right after (same second) stays valid
+    return this.prisma.user.update({
+      where: { id: userId },
+      data: { passwordHash: await bcrypt.hash(password, 11), passwordChangedAt: new Date(Date.now() - 1000) },
+    });
+  }
+
+  private async sendPasswordChanged(email: string, name: string | null) {
+    const first = (name || '').split(/\s+/)[0] || 'there';
+    await this.mail.send({
+      to: email,
+      subject: 'Your tuli password was changed',
+      text: `Hi ${first},\n\nThe password for your tuli account was just changed, and other devices were signed out.\n\nIf this wasn't you, reset your password now at ${this.appUrl()}/forgot-password/ and contact us at info@nubiannetworks.com.`,
+      html: emailLayout({
+        heading: 'Your password was changed',
+        paragraphs: [
+          `Hi ${escapeHtml(first)},`,
+          'The password for your tuli account was just changed. For your security, any other devices signed in to your account have been signed out.',
+          `<strong>Wasn’t you?</strong> Reset your password straight away and let us know at <a href="mailto:info@nubiannetworks.com" style="color:#2451d6">info@nubiannetworks.com</a>.`,
+        ],
+        button: { label: 'Reset my password', url: `${this.appUrl()}/forgot-password/` },
+      }),
+    });
+  }
+
+  private appUrl() {
+    return this.config.get<string>('APP_URL', 'http://localhost:3000').replace(/\/$/, '');
   }
 
   async updateProfile(user: AuthUser, name: string) {

@@ -153,6 +153,8 @@ model User {
   name           String
   /// null for Google-only accounts
   passwordHash   String?
+  /// Sessions issued before this moment are no longer valid (password reset / change → other devices signed out)
+  passwordChangedAt DateTime?
   googleId       String?       @unique
   /// Sign in with Apple (the stable "sub" Apple gives this person)
   appleId        String?       @unique

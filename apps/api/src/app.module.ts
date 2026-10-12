@@ -1,3 +1,4 @@
+import { MailModule } from './mail/mail.module';
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
@@ -28,6 +29,7 @@ import { SequencesModule } from './sequences/sequences.module';
     ConfigModule.forRoot({ isGlobal: true, validate: validateEnv }),
     PrismaModule,
     RedisModule,
+    MailModule,
     ThrottlerModule.forRootAsync({
       inject: [RedisThrottlerStorage],
       useFactory: (storage: RedisThrottlerStorage) => ({ throttlers: [{ ttl: 60_000, limit: 300 }], storage }),

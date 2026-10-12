@@ -126,6 +126,12 @@ GOOGLE_CLIENT_ID=$GID
 GOOGLE_CLIENT_SECRET=$GSECRET
 GOOGLE_REDIRECT_URI=https://$DOMAIN/api/auth/google/callback
 
+# ── Email (password resets) — Resend API key; the from-domain must be verified in Resend
+RESEND_API_KEY=
+RESEND_FROM_NAME=tuli
+RESEND_FROM_EMAIL=no-reply@$DOMAIN
+MAIL_REPLY_TO=info@nubiannetworks.com
+
 # ── Sign in with Apple ── (leave empty to keep the button disabled)
 APPLE_SERVICES_ID=
 APPLE_TEAM_ID=

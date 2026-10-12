@@ -4,6 +4,8 @@ export interface JwtPayload {
   sub: string;
   /** organizationId the token was issued for (null for platform admins) */
   org: string | null;
+  /** issued-at (seconds), added by jsonwebtoken */
+  iat?: number;
 }
 
 export interface AuthUser {

@@ -69,3 +69,22 @@ export class ProfileDto {
   @MaxLength(120)
   name: string;
 }
+
+export class ForgotPasswordDto {
+  @Transform(lower)
+  @IsEmail({}, { message: 'Enter a valid email address' })
+  @MaxLength(200)
+  email: string;
+}
+
+export class ResetPasswordDto {
+  @IsString()
+  @MinLength(20)
+  @MaxLength(200)
+  token: string;
+
+  @IsString()
+  @MinLength(8, { message: 'Use at least 8 characters for your password' })
+  @MaxLength(200)
+  password: string;
+}

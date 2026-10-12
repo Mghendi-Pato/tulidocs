@@ -33,6 +33,7 @@ function LoginForm() {
   useEffect(() => {
     if (params.get('signedOut')) toast.success('You’ve been logged out');
     if (params.get('expired')) setError('Your session has ended. Please sign in again.');
+    if (params.get('reset')) toast.success('Password updated — sign in with your new password');
     if (params.get('signedOut') || params.get('error') || params.get('expired')) {
       window.history.replaceState(null, '', next ? `/login/?next=${encodeURIComponent(next)}` : '/login/');
     }
@@ -75,7 +76,12 @@ function LoginForm() {
         <Field label="Password">
           {(id) => <PasswordInput id={id} autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Your password" />}
         </Field>
-        <Checkbox label="Keep me signed in" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+        <div className="flex items-center justify-between gap-3">
+          <Checkbox label="Keep me signed in" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+          <Link href={email.trim() ? `/forgot-password/?email=${encodeURIComponent(email.trim())}` : '/forgot-password/'} className="text-[14px] font-semibold text-primary hover:underline">
+            Forgot password?
+          </Link>
+        </div>
         <Button type="submit" size="lg" className="w-full rounded-lg" loading={busy && !done} disabled={done} icon={done ? <CheckCircle2 className="size-5" /> : undefined}>
           {done ? 'Signed in' : 'Sign in'}
           {!busy && !done && <ArrowRight className="size-[18px]" />}

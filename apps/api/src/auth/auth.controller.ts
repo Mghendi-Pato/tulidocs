@@ -9,7 +9,7 @@ import { randomBytes } from 'node:crypto';
 import { RedisService } from '../redis/redis.service';
 import { AuthService } from './auth.service';
 import { setAuthCookie } from './cookie';
-import { ChangePasswordDto, LoginDto, ProfileDto, SignupDto } from './dto/auth.dto';
+import { ChangePasswordDto, ForgotPasswordDto, ResetPasswordDto, LoginDto, ProfileDto, SignupDto } from './dto/auth.dto';
 import { AUTH_COOKIE } from './jwt.strategy';
 
 @Controller('auth')
@@ -154,11 +154,41 @@ export class AuthController {
     return this.auth.updateProfile(user, dto.name);
   }
 
+  /** Change password (signed in). Other devices are signed out; this one gets a fresh session. */
   @AnyAccount()
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post('password')
   @HttpCode(200)
-  password(@CurrentUser() user: AuthUser, @Body() dto: ChangePasswordDto) {
-    return this.auth.changePassword(user, dto);
+  async password(@CurrentUser() user: AuthUser, @Body() dto: ChangePasswordDto, @Res({ passthrough: true }) res: Response) {
+    const { token } = await this.auth.changePassword(user, dto);
+    setAuthCookie(res, this.config, token);
+    return { ok: true };
+  }
+
+  /** "Forgot password?" — emails a one-time link. Same answer whether or not the account exists. */
+  @Public()
+  @Throttle({ default: { limit: 5, ttl: 15 * 60_000 } })
+  @Post('forgot-password')
+  @HttpCode(200)
+  forgotPassword(@Body() dto: ForgotPasswordDto) {
+    return this.auth.forgotPassword(dto.email);
+  }
+
+  @Public()
+  @Throttle({ default: { limit: 20, ttl: 15 * 60_000 } })
+  @Get('reset-password')
+  checkReset(@Query('token') token: string) {
+    return this.auth.checkResetToken(String(token ?? ''));
+  }
+
+  /** Sets the new password from the emailed link and signs the user in */
+  @Public()
+  @Throttle({ default: { limit: 10, ttl: 15 * 60_000 } })
+  @Post('reset-password')
+  @HttpCode(200)
+  async resetPassword(@Body() dto: ResetPasswordDto, @Res({ passthrough: true }) res: Response) {
+    const { token, user } = await this.auth.resetPassword(dto.token, dto.password);
+    setAuthCookie(res, this.config, token);
+    return { user };
   }
 }
