@@ -34,6 +34,12 @@ npm run build
 mkdir -p "$(dirname "$FE_DEPLOY")"
 rm -rf "$FE_DEPLOY.new" "$FE_DEPLOY.old"
 cp -r out "$FE_DEPLOY.new"
+# keep the previous builds' script/style files for a week: tabs still open on the old version can keep
+# loading them instead of failing mid-navigation (filenames are content hashes, so nothing clashes)
+if [ -d "$FE_DEPLOY/_next/static" ]; then
+  cp -rnp "$FE_DEPLOY/_next/static/." "$FE_DEPLOY.new/_next/static/"
+  find "$FE_DEPLOY.new/_next/static" -type f -mtime +7 -delete
+fi
 [ -d "$FE_DEPLOY" ] && mv "$FE_DEPLOY" "$FE_DEPLOY.old"
 mv "$FE_DEPLOY.new" "$FE_DEPLOY"
 rm -rf "$FE_DEPLOY.old"
